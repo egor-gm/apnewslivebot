@@ -13,6 +13,11 @@ from bs4 import BeautifulSoup
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 CHANNEL_ID = os.environ.get("TELEGRAM_CHANNEL_ID")  # e.g. @YourChannelUsername or numeric chat id
 CHECK_INTERVAL = int(os.environ.get("CHECK_INTERVAL_SECONDS", "40"))  # seconds between loops
+
+# extra backoff config
+LONG_INTERVAL = int(os.environ.get("LONG_CHECK_INTERVAL_SECONDS", "300"))  # 5 min default
+NO_TOPICS_THRESHOLD_SECONDS = int(os.environ.get("NO_TOPICS_THRESHOLD_SECONDS", "3600"))  # 1 hour
+
 HOMEPAGE_URL = "https://apnews.com"
 
 if not BOT_TOKEN or not CHANNEL_ID:
@@ -201,10 +206,29 @@ def format_message(topic: str, title: str, url: str, ts_iso: str) -> str:
 def main():
     load_sent()
     logging.info("Bot started")
+
+    # state for dynamic interval
+    current_interval = CHECK_INTERVAL
+    last_topics_seen_at = time.time()  # timestamp of last cycle that had any LIVE topic
+
+    logging.info(f"Initial scan interval: {current_interval} s")
+
     while True:
         loop_start = time.time()
         try:
             topics = get_live_topics()
+
+            # adjust interval depending on presence of LIVE topics
+            if topics:
+                last_topics_seen_at = time.time()
+                if current_interval != CHECK_INTERVAL:
+                    logging.info("LIVE topics detected again – reverting scan interval")
+                    current_interval = CHECK_INTERVAL
+            else:
+                if (time.time() - last_topics_seen_at) > NO_TOPICS_THRESHOLD_SECONDS and current_interval != LONG_INTERVAL:
+                    logging.info("No LIVE topics for 1 hour – switching scan interval to 5 minutes")
+                    current_interval = LONG_INTERVAL
+
             if not topics:
                 logging.info("No live topics found this cycle")
             for topic_name, topic_url in topics.items():
@@ -225,7 +249,7 @@ def main():
             logging.error(f"Cycle error: {e}")
         # Sleep remaining time
         elapsed = time.time() - loop_start
-        to_sleep = max(5, CHECK_INTERVAL - elapsed)
+        to_sleep = max(5, current_interval - elapsed)
         time.sleep(to_sleep)
 
 if __name__ == "__main__":
