@@ -32,25 +32,34 @@ logging.basicConfig(
 # ---------- Persistence (sent links) ----------
 SENT_FILE = "sent.json"
 sent_links: Set[str] = set()
+sent_post_ids: Set[str] = set()  # track LiveBlogPost IDs that were sent
 
 def load_sent():
-    global sent_links
+    global sent_links, sent_post_ids
     if os.path.isfile(SENT_FILE):
         try:
             with open(SENT_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            if isinstance(data, list):
+            if isinstance(data, dict):
+                sent_links = set(data.get("links", []))
+                sent_post_ids = set(data.get("post_ids", []))
+            elif isinstance(data, list):
+                # legacy format (only links)
                 sent_links = set(data)
-            logging.info(f"Loaded {len(sent_links)} previously sent links")
+            logging.info(
+                f"Loaded {len(sent_links)} links and {len(sent_post_ids)} post_ids"
+            )
         except Exception as e:
-            logging.warning(f"Could not load sent.json: {e}")
+            logging.warning(f"Could not load {SENT_FILE}: {e}")
 
 def save_sent():
     try:
         with open(SENT_FILE, "w", encoding="utf-8") as f:
-            json.dump(list(sent_links), f)
+            json.dump(
+                {"links": list(sent_links), "post_ids": list(sent_post_ids)}, f
+            )
     except Exception as e:
-        logging.warning(f"Could not save sent.json: {e}")
+        logging.warning(f"Could not save {SENT_FILE}: {e}")
 
 # ---------- HTTP helper with retries ----------
 def fetch(url: str, timeout=15, retries=3, backoff=3) -> str:
@@ -113,39 +122,45 @@ ARTICLE_HREF_RE = re.compile(r"^(/article|https://apnews\.com/article)")
 def normalize_url(href: str) -> str:
     return href if href.startswith("http") else HOMEPAGE_URL + href
 
-def parse_live_page(topic_name: str, url: str) -> List[Tuple[str, str, str]]:
+def parse_live_page(topic_name: str, url: str) -> List[Tuple[str, str, str, str]]:
     """
-    Return list of (title, url, ts_iso) for posts in the LIVE page
-    **dated today only**.  Stops scanning when the date header changes
-    to yesterday or earlier.
+    Scrape today's posts and return tuples:
+        (pid, title, permalink, ts_iso)
+
+    • Permalink comes from <bsp-copy-link data-link="…"> if present,
+      else we fallback to liveURL#pid.
+    • Stops when the date header switches to yesterday.
     """
     html = fetch(url)
     soup = BeautifulSoup(html, "html.parser")
 
     today_label = datetime.now(timezone.utc).strftime("%-d %B %Y").upper()
     feed = soup.find(attrs={"role": "feed"}) or soup
-    new_items: List[Tuple[str, str, str]] = []
+    new_items = []
 
-    for post in feed.find_all("div", class_="LiveBlogPost", recursive=False):
-        date_header = post.find_previous("h3", class_="LiveBlogPage-dateGroup")
-        if date_header and date_header.get_text(strip=True).upper() != today_label:
-            break
-
-        headline_tag = post.find("h2", class_="LiveBlogPost-headline")
-        if not headline_tag:
+    for post in feed.find_all("div", class_="LiveBlogPost"):  # nested allowed
+        pid = post.get("id")
+        if not pid or pid in sent_post_ids:
             continue
-        title = headline_tag.get_text(" ", strip=True)
 
-        link_tag = post.find("a", href=ARTICLE_HREF_RE)
-        if not link_tag:
-            continue
-        full_url = normalize_url(link_tag["href"]).split("?", 1)[0]
+        date_hdr = post.find_previous("h3", class_="LiveBlogPage-dateGroup")
+        if date_hdr and date_hdr.get_text(strip=True).upper() != today_label:
+            break  # reached yesterday
 
-        if full_url in sent_links:
+        headline = post.find("h2", class_="LiveBlogPost-headline")
+        if not headline:
             continue
+        title = headline.get_text(" ", strip=True)
+
+        # Preferred permalink from share button
+        share_tag = post.find("bsp-copy-link", attrs={"data-link": True})
+        if share_tag:
+            permalink = share_tag["data-link"].split("?", 1)[0]
+        else:
+            permalink = url.split("#")[0] + f"#{pid}"
 
         ts_iso = extract_time(post)
-        new_items.append((title, full_url, ts_iso))
+        new_items.append((pid, title, permalink, ts_iso))
 
     return new_items
 
@@ -209,14 +224,15 @@ def main():
             for topic_name, topic_url in topics.items():
                 logging.info(f"Checking {topic_name} -> {topic_url}")
                 new_articles = parse_live_page(topic_name, topic_url)
-                new_articles.sort(key=lambda t: t[2])  # oldest → newest
+                new_articles.sort(key=lambda t: t[3])  # oldest → newest by ts_iso
 
-                for title, link, ts_iso in new_articles:
-                    if link in sent_links:
+                for pid, title, link, ts_iso in new_articles:
+                    if pid in sent_post_ids:
                         continue
                     msg = format_message(topic_name, title, link, ts_iso)
                     send_telegram_message(msg)
-                    sent_links.add(link)
+                    sent_post_ids.add(pid)
+                    sent_links.add(link)  # optional: keep link set to avoid duplicates across topics
                     logging.info(f"Sent: {title}")
                 if new_articles:
                     save_sent()
