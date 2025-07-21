@@ -115,34 +115,54 @@ ARTICLE_HREF_RE = re.compile(r"^(/article|https://apnews\.com/article)")
 
 def parse_live_page(topic_name: str, url: str) -> List[Tuple[str, str, str]]:
     """
-    Returns list of (title, url, ts_iso) for new articles.
-    Heuristic:
-      - collect all anchors matching ARTICLE_HREF_RE
-      - title = anchor text stripped
-      - ts extracted from nearby <time>, data attributes, or fallback to now
+    Scrape a LIVE topic page and return list of (title, url, ts_iso) **only**
+    from the central feed.
+
+    We look for a container whose attribute role="feed" (the main stream of
+    live updates).  If not present we fall back to the whole document but
+    still try to filter out obvious sidebar items.
+
+    The function keeps order as published on the page.
     """
     html = fetch(url)
     soup = BeautifulSoup(html, "html.parser")
-    new_items = []
-    anchors = soup.find_all("a", href=True)
-    for a in anchors:
+
+    # 1. Locate the live update feed area
+    feed_container = soup.find(attrs={"role": "feed"}) or soup
+
+    # 2. Inside that feed, collect article anchors only
+    article_anchors = feed_container.find_all("a", href=True)
+
+    new_items: List[Tuple[str, str, str]] = []
+    for a in article_anchors:
         href = a["href"]
+
+        # only true article links, skip internal nav fragments etc.
         if not ARTICLE_HREF_RE.match(href):
             continue
+
         full = href if href.startswith("http") else HOMEPAGE_URL + href
-        # Basic normalize remove tracking queries
-        if "?" in full:
-            full = full.split("?", 1)[0]
+        full = full.split("?", 1)[0]  # strip tracking queries
+
         if full in sent_links:
             continue
-        title = a.get_text(" ", strip=True)
-        # Filter out empty or nav duplicates
-        if not title or title.lower().startswith("live:"):
-            continue
 
-        ts_iso = extract_time(a)  # try from page
+        # headline text
+        title = a.get_text(" ", strip=True)
+        if not title or title.lower().startswith("live:"):
+            continue  # skip label rows
+
+        ts_iso = extract_time(a)  # try to parse <time> tag, else now
         new_items.append((title, full, ts_iso))
-    return dedupe_order_preserving(new_items)
+
+    # Preserve original order while deduping by URL
+    seen = set()
+    ordered = []
+    for t in new_items:
+        if t[1] not in seen:
+            seen.add(t[1])
+            ordered.append(t)
+    return ordered
 
 def dedupe_order_preserving(items: List[Tuple[str, str, str]]) -> List[Tuple[str, str, str]]:
     seen = set()
@@ -188,7 +208,6 @@ def send_telegram_message(text: str):
         "chat_id": CHANNEL_ID,
         "text": text,
         "parse_mode": "Markdown",
-        "disable_web_page_preview": True,
     }
     try:
         r = requests.post(api_url, data=params, timeout=15)
