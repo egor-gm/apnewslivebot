@@ -84,9 +84,7 @@ def get_live_topics() -> Dict[str, str]:
 
     # Approach 1: text node containing 'live:'
     for text_node in soup.find_all(string=lambda t: t and "live:" in t.lower()):
-        # We only want the ones that are label markers, not within articles
         parent = text_node.parent
-        # Grab next anchor
         a = parent.find_next("a")
         if a and a.get("href"):
             name = a.get_text(strip=True)
@@ -101,7 +99,6 @@ def get_live_topics() -> Dict[str, str]:
         txt = a.get_text(" ", strip=True)
         if txt.lower().startswith("live:") and a.get("href"):
             name = txt.replace("LIVE:", "").replace("Live:", "").strip()
-            # sometimes anchor itself is the live page
             url = a["href"]
             if url.startswith("/"):
                 url = HOMEPAGE_URL + url
@@ -113,102 +110,59 @@ def get_live_topics() -> Dict[str, str]:
 # ---------- Parse live topic page for article links ----------
 ARTICLE_HREF_RE = re.compile(r"^(/article|https://apnews\.com/article)")
 
+def normalize_url(href: str) -> str:
+    return href if href.startswith("http") else HOMEPAGE_URL + href
+
 def parse_live_page(topic_name: str, url: str) -> List[Tuple[str, str, str]]:
     """
-    Scrape a LIVE topic page and return list of (title, url, ts_iso) **only**
-    from the central feed.
-
-    We look for a container whose attribute role="feed" (the main stream of
-    live updates).  If not present we fall back to the whole document but
-    still try to filter out obvious sidebar items.
-
-    The function keeps order as published on the page.
+    Return list of (title, url, ts_iso) for posts in the LIVE page
+    **dated today only**.  Stops scanning when the date header changes
+    to yesterday or earlier.
     """
     html = fetch(url)
     soup = BeautifulSoup(html, "html.parser")
 
-    # 1. Locate the live update feed area
-    feed_container = soup.find(attrs={"role": "feed"}) or soup
-
-    # 2. Inside that feed, collect article anchors only
-    article_anchors = feed_container.find_all("a", href=True)
-
+    today_label = datetime.now(timezone.utc).strftime("%-d %B %Y").upper()
+    feed = soup.find(attrs={"role": "feed"}) or soup
     new_items: List[Tuple[str, str, str]] = []
-    for a in article_anchors:
-        href = a["href"]
 
-        # only true article links, skip internal nav fragments etc.
-        if not ARTICLE_HREF_RE.match(href):
+    for post in feed.find_all("div", class_="LiveBlogPost", recursive=False):
+        date_header = post.find_previous("h3", class_="LiveBlogPage-dateGroup")
+        if date_header and date_header.get_text(strip=True).upper() != today_label:
+            break
+
+        headline_tag = post.find("h2", class_="LiveBlogPost-headline")
+        if not headline_tag:
+            continue
+        title = headline_tag.get_text(" ", strip=True)
+
+        link_tag = post.find("a", href=ARTICLE_HREF_RE)
+        if not link_tag:
+            continue
+        full_url = normalize_url(link_tag["href"]).split("?", 1)[0]
+
+        if full_url in sent_links:
             continue
 
-        full = href if href.startswith("http") else HOMEPAGE_URL + href
-        full = full.split("?", 1)[0]  # strip tracking queries
+        ts_iso = extract_time(post)
+        new_items.append((title, full_url, ts_iso))
 
-        if full in sent_links:
-            continue
+    return new_items
 
-        # headline text
-        title = a.get_text(" ", strip=True)
-        if not title or title.lower().startswith("live:"):
-            continue  # skip label rows
-
-        ts_iso = extract_time(a)  # try to parse <time> tag, else now
-        new_items.append((title, full, ts_iso))
-
-    # Preserve original order while deduping by URL
-    seen = set()
-    ordered = []
-    for t in new_items:
-        if t[1] not in seen:
-            seen.add(t[1])
-            ordered.append(t)
-    return ordered
-
-def dedupe_order_preserving(items: List[Tuple[str, str, str]]) -> List[Tuple[str, str, str]]:
-    seen = set()
-    out = []
-    for t in items:
-        if t[1] not in seen:
-            seen.add(t[1])
-            out.append(t)
-    return out
-
-def extract_time(a_tag) -> str:
-    """
-    Try to find a timestamp related to an anchor:
-      - <time datetime="...">
-      - sibling span/time elements with datetime/time attributes
-      - fallback: now UTC
-    """
-    # direct <time> descendant or sibling
-    time_tag = a_tag.find("time")
-    if not time_tag:
-        # check next siblings
-        for sib in a_tag.parent.find_all(["time", "span"], limit=4):
-            if sib.name == "time":
-                time_tag = sib
-                break
-            # look for data attributes like data-source or datetime text patterns
-    if time_tag:
-        dt_attr = time_tag.get("datetime")
-        if dt_attr:
-            try:
-                # standardize
-                return datetime.fromisoformat(dt_attr.replace("Z", "+00:00")).astimezone(timezone.utc).isoformat()
-            except Exception:
-                pass
-        # fallback to text parse if looks like time (skip for brevity)
-    # fallback now
+def extract_time(tag) -> str:
+    time_tag = tag.find("time") or tag.find_previous("time")
+    if time_tag and time_tag.get("datetime"):
+        dt_attr = time_tag["datetime"]
+        try:
+            return datetime.fromisoformat(dt_attr.replace("Z", "+00:00")).astimezone(timezone.utc).isoformat()
+        except Exception:
+            pass
     return datetime.now(timezone.utc).isoformat()
 
 # ---------- Telegram send ----------
 def send_telegram_message(text: str):
     api_url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    params = {
-        "chat_id": CHANNEL_ID,
-        "text": text,
-        "parse_mode": "Markdown",
-    }
+    params = {"chat_id": CHANNEL_ID, "text": text, "parse_mode": "Markdown"}
     try:
         r = requests.post(api_url, data=params, timeout=15)
         if r.status_code != 200:
@@ -217,8 +171,12 @@ def send_telegram_message(text: str):
         logging.warning(f"Telegram exception: {e}")
 
 def format_message(topic: str, title: str, url: str, ts_iso: str) -> str:
-    # sanitize markdown special chars in title
-    safe_title = title.replace("_", "\\_").replace("*", "\\*").replace("[", "\\[").replace("`", "\\`")
+    safe_title = (
+        title.replace("_", "\\_")
+        .replace("*", "\\*")
+        .replace("[", "\\[")
+        .replace("`", "\\`")
+    )
     return f"📰 *{topic}* | {safe_title}\n{ts_iso}\n{url}"
 
 # ---------- Main loop ----------
@@ -226,50 +184,48 @@ def main():
     load_sent()
     logging.info("Bot started")
 
-    # state for dynamic interval
     current_interval = CHECK_INTERVAL
-    last_topics_seen_at = time.time()  # timestamp of last cycle that had any LIVE topic
-
-    logging.info(f"Initial scan interval: {current_interval} s")
+    last_topics_seen_at = time.time()
+    logging.info(f"Initial scan interval: {current_interval}s")
 
     while True:
         loop_start = time.time()
         try:
             topics = get_live_topics()
 
-            # adjust interval depending on presence of LIVE topics
             if topics:
                 last_topics_seen_at = time.time()
                 if current_interval != CHECK_INTERVAL:
-                    logging.info("LIVE topics detected again – reverting scan interval")
+                    logging.info("LIVE topics returned – reverting interval")
                     current_interval = CHECK_INTERVAL
             else:
                 if (time.time() - last_topics_seen_at) > NO_TOPICS_THRESHOLD_SECONDS and current_interval != LONG_INTERVAL:
-                    logging.info("No LIVE topics for 1 hour – switching scan interval to 5 minutes")
+                    logging.info("No LIVE topics for 1 hour – switching interval to 5 minutes")
                     current_interval = LONG_INTERVAL
 
             if not topics:
-                logging.info("No live topics found this cycle")
+                logging.info("No live topics this cycle")
+
             for topic_name, topic_url in topics.items():
-                logging.info(f"Checking live topic: {topic_name} -> {topic_url}")
+                logging.info(f"Checking {topic_name} -> {topic_url}")
                 new_articles = parse_live_page(topic_name, topic_url)
-                # Sort oldest to newest by timestamp (ts_iso lexical works for ISO)
-                new_articles.sort(key=lambda t: t[2])
+                new_articles.sort(key=lambda t: t[2])  # oldest → newest
+
                 for title, link, ts_iso in new_articles:
                     if link in sent_links:
                         continue
                     msg = format_message(topic_name, title, link, ts_iso)
                     send_telegram_message(msg)
                     sent_links.add(link)
-                    logging.info(f"Sent: {title} ({link})")
+                    logging.info(f"Sent: {title}")
                 if new_articles:
                     save_sent()
+
         except Exception as e:
             logging.error(f"Cycle error: {e}")
-        # Sleep remaining time
+
         elapsed = time.time() - loop_start
-        to_sleep = max(5, current_interval - elapsed)
-        time.sleep(to_sleep)
+        time.sleep(max(5, current_interval - elapsed))
 
 if __name__ == "__main__":
     main()
