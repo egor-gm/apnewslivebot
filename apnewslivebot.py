@@ -194,6 +194,7 @@ def format_message(topic: str, title: str, url: str, ts_iso: str) -> str:
     )
     return f"📰 *{topic}* | {safe_title}\n{ts_iso}\n{url}"
 
+
 # ---------- Main loop ----------
 def main():
     load_sent()
@@ -208,13 +209,16 @@ def main():
         try:
             topics = get_live_topics()
 
+            # Adaptive interval logic
             if topics:
                 last_topics_seen_at = time.time()
                 if current_interval != CHECK_INTERVAL:
                     logging.info("LIVE topics returned – reverting interval")
                     current_interval = CHECK_INTERVAL
             else:
-                if (time.time() - last_topics_seen_at) > NO_TOPICS_THRESHOLD_SECONDS and current_interval != LONG_INTERVAL:
+                if (
+                    time.time() - last_topics_seen_at
+                ) > NO_TOPICS_THRESHOLD_SECONDS and current_interval != LONG_INTERVAL:
                     logging.info("No LIVE topics for 1 hour – switching interval to 5 minutes")
                     current_interval = LONG_INTERVAL
 
@@ -223,18 +227,20 @@ def main():
 
             for topic_name, topic_url in topics.items():
                 logging.info(f"Checking {topic_name} -> {topic_url}")
-                new_articles = parse_live_page(topic_name, topic_url)
-                new_articles.sort(key=lambda t: t[3])  # oldest → newest by ts_iso
+                new_posts = parse_live_page(topic_name, topic_url)
+                # Sort oldest → newest by timestamp (index 3)
+                new_posts.sort(key=lambda t: t[3])
 
-                for pid, title, link, ts_iso in new_articles:
+                for pid, title, link, ts_iso in new_posts:
                     if pid in sent_post_ids:
                         continue
                     msg = format_message(topic_name, title, link, ts_iso)
                     send_telegram_message(msg)
                     sent_post_ids.add(pid)
-                    sent_links.add(link)  # optional: keep link set to avoid duplicates across topics
+                    sent_links.add(link)  # still track URLs to avoid x‑topic dupes
                     logging.info(f"Sent: {title}")
-                if new_articles:
+
+                if new_posts:
                     save_sent()
 
         except Exception as e:
@@ -242,6 +248,7 @@ def main():
 
         elapsed = time.time() - loop_start
         time.sleep(max(5, current_interval - elapsed))
+
 
 if __name__ == "__main__":
     main()
