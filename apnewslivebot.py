@@ -149,16 +149,15 @@ def parse_live_page(topic_name: str, url: str):
         logging.warning(f"No LiveBlogPosting JSON-LD found for {topic_name}")
         return []
 
+    posts = ld_json.get("blogPosts") or ld_json.get("liveBlogUpdate", [])
     new_items = []
-    for post in ld_json.get("blogPosts", []):
-        pid       = post.get("@id") or post.get("url")
-        title     = post.get("headline", "").strip()
-        permalink = post.get("url")
-        ts_iso    = post.get("datePublished")
-
+    for post in posts:
+        pid = post.get("@id") or post.get("url") or f"{post.get('headline')}_{post.get('datePublished')}"
+        title = post.get("headline", "").strip()
+        permalink = post.get("url") or url
+        ts_iso = post.get("datePublished") or post.get("dateModified")
         if pid and pid not in sent_post_ids:
             new_items.append((pid, title, permalink, ts_iso))
-
     # Sort oldest → newest
     new_items.sort(key=lambda t: t[3] or "")
     return new_items
