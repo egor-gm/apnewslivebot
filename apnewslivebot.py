@@ -4,7 +4,7 @@ import json
 import logging
 import re
 from datetime import datetime, timezone
-from typing import Dict, List, Tuple, Set
+from typing import Dict, Set
 
 import requests
 from bs4 import BeautifulSoup
@@ -228,7 +228,9 @@ def main():
                 logging.info(f"Checking {topic_name} -> {topic_url}")
                 new_posts = parse_live_page(topic_name, topic_url)
                 # Sort oldest → newest by timestamp (index 3)
-                new_posts.sort(key=lambda t: t[3])
+                # Some posts may lack a timestamp; use empty string to avoid
+                # comparing None against strings which raises TypeError.
+                new_posts.sort(key=lambda t: t[3] or "")
 
                 for pid, title, link, ts_iso in new_posts:
                     if pid in sent_post_ids:
