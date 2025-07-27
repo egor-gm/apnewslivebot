@@ -233,16 +233,14 @@ def main():
                 new_posts.sort(key=lambda t: t[3] or "")
 
                 for pid, title, link, ts_iso in new_posts:
-                    if pid in sent_post_ids:
+                    if pid in sent_post_ids or link in sent_links:
                         continue
                     msg = format_message(topic_name, title, link, ts_iso)
                     send_telegram_message(msg)
                     sent_post_ids.add(pid)
-                    sent_links.add(link)  # still track URLs to avoid x‑topic dupes
-                    logging.info(f"Sent: {title}")
-
-                if new_posts:
+                    sent_links.add(link)
                     save_sent()
+                    logging.info(f"Sent: {title}")
 
         except Exception as e:
             logging.error(f"Cycle error: {e}")
