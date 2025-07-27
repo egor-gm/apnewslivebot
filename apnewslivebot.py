@@ -189,6 +189,11 @@ def format_message(topic: str, title: str, url: str, ts_iso: str) -> str:
         .replace("*", "\\*")
         .replace("[", "\\[")
         .replace("`", "\\`")
+        .replace("(", "\\(")
+        .replace(")", "\\)")
+        .replace("~", "\\~")
+        .replace(">", "\\>")
+        .replace("#", "\\#")
     )
     return f"📰 *{topic}* | {safe_title}\n{ts_iso}\n{url}"
 
