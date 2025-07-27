@@ -52,6 +52,30 @@ HTML_SNIPPET = f"""
 </html>
 """
 
+REL_LD_JSON = {
+    "@context": "https://schema.org",
+    "@type": "LiveBlogPosting",
+    "blogPosts": [
+        {
+            "@id": "r1",
+            "headline": "Relative",
+            "url": "/article/rel1",
+            "datePublished": "2024-01-01T12:00:00Z",
+        }
+    ],
+}
+
+REL_SNIPPET = f"""
+<html>
+<head>
+<script type='application/ld+json'>
+{json.dumps(REL_LD_JSON)}
+</script>
+</head>
+<body></body>
+</html>
+"""
+
 
 def test_parse_live_page_chronological(monkeypatch):
     def mock_fetch(url, timeout=15, retries=3, backoff=3):
@@ -64,3 +88,16 @@ def test_parse_live_page_chronological(monkeypatch):
     titles = [p[1] for p in posts]
 
     assert titles == ["First", "Second", "Third"]
+
+
+def test_parse_live_page_relative_urls(monkeypatch):
+    def mock_fetch(url, timeout=15, retries=3, backoff=3):
+        return REL_SNIPPET
+
+    monkeypatch.setattr(apnewslivebot, "fetch", mock_fetch)
+    apnewslivebot.sent_post_ids.clear()
+
+    posts = apnewslivebot.parse_live_page("topic", "https://example.com/live")
+
+    assert len(posts) == 1
+    assert posts[0][2] == apnewslivebot.HOMEPAGE_URL + "/article/rel1"

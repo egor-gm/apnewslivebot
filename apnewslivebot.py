@@ -154,7 +154,10 @@ def parse_live_page(topic_name: str, url: str):
     for post in posts:
         pid = post.get("@id") or post.get("url") or f"{post.get('headline')}_{post.get('datePublished')}"
         title = post.get("headline", "").strip()
-        permalink = post.get("url") or url
+        post_url = post.get("url")
+        if post_url and not post_url.startswith("http"):
+            post_url = normalize_url(post_url)
+        permalink = post_url or url
         ts_iso = post.get("datePublished") or post.get("dateModified")
         if pid and pid not in sent_post_ids:
             new_items.append((pid, title, permalink, ts_iso))
