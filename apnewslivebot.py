@@ -201,6 +201,16 @@ def format_message(topic: str, title: str, url: str, ts_iso: str) -> str:
     return f"📰 *{topic}* | {safe_title}\n{ts_iso}\n{url}"
 
 
+# ---------- Delay calculation ----------
+def calculate_delay(current_interval: float, elapsed: float) -> float:
+    """Return remaining delay before next cycle.
+
+    Ensures the loop does not wait extra time if processing exceeded the
+    configured interval.
+    """
+    return max(0, current_interval - elapsed)
+
+
 # ---------- Main loop ----------
 def main():
     load_sent()
@@ -254,7 +264,10 @@ def main():
             logging.error(f"Cycle error: {e}")
 
         elapsed = time.time() - loop_start
-        time.sleep(max(5, current_interval - elapsed))
+        # Sleep only for the remaining time left in the interval. If the loop
+        # took longer than the interval, start the next iteration immediately
+        # instead of adding extra delay.
+        time.sleep(calculate_delay(current_interval, elapsed))
 
 
 if __name__ == "__main__":
