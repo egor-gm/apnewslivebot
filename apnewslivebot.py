@@ -122,46 +122,41 @@ ARTICLE_HREF_RE = re.compile(r"^(/article|https://apnews\.com/article)")
 def normalize_url(href: str) -> str:
     return href if href.startswith("http") else HOMEPAGE_URL + href
 
-def parse_live_page(topic_name: str, url: str) -> List[Tuple[str, str, str, str]]:
+def parse_live_page(topic_name: str, url: str):
     """
-    Scrape today's posts and return tuples:
-        (pid, title, permalink, ts_iso)
-
-    • Permalink comes from <bsp-copy-link data-link="…"> if present,
-      else we fallback to liveURL#pid.
-    • Stops when the date header switches to yesterday.
+    Scrape via the JSON-LD <script type="application/ld+json"> of type LiveBlogPosting,
+    which contains a 'blogPosts' array with id, headline, url, datePublished.
     """
     html = fetch(url)
     soup = BeautifulSoup(html, "html.parser")
 
-    today_label = datetime.now(timezone.utc).strftime("%-d %B %Y").upper()
-    feed = soup.find(attrs={"role": "feed"}) or soup
+    # Find the JSON-LD block for the live blog
+    ld_json = None
+    for script in soup.find_all("script", {"type": "application/ld+json"}):
+        try:
+            data = json.loads(script.string)
+        except Exception:
+            continue
+        if data.get("@type") == "LiveBlogPosting":
+            ld_json = data
+            break
+
+    if not ld_json:
+        logging.warning(f"No LiveBlogPosting JSON-LD found for {topic_name}")
+        return []
+
     new_items = []
+    for post in ld_json.get("blogPosts", []):
+        pid       = post.get("@id") or post.get("url")
+        title     = post.get("headline", "").strip()
+        permalink = post.get("url")
+        ts_iso    = post.get("datePublished")
 
-    for post in feed.find_all("div", class_="LiveBlogPost"):  # nested allowed
-        pid = post.get("id")
-        if not pid or pid in sent_post_ids:
-            continue
+        if pid and pid not in sent_post_ids:
+            new_items.append((pid, title, permalink, ts_iso))
 
-        date_hdr = post.find_previous("h3", class_="LiveBlogPage-dateGroup")
-        if date_hdr and date_hdr.get_text(strip=True).upper() != today_label:
-            break  # reached yesterday
-
-        headline = post.find("h2", class_="LiveBlogPost-headline")
-        if not headline:
-            continue
-        title = headline.get_text(" ", strip=True)
-
-        # Preferred permalink from share button
-        share_tag = post.find("bsp-copy-link", attrs={"data-link": True})
-        if share_tag:
-            permalink = share_tag["data-link"].split("?", 1)[0]
-        else:
-            permalink = url.split("#")[0] + f"#{pid}"
-
-        ts_iso = extract_time(post)
-        new_items.append((pid, title, permalink, ts_iso))
-
+    # Sort oldest → newest
+    new_items.sort(key=lambda t: t[3] or "")
     return new_items
 
 def extract_time(tag) -> str:
