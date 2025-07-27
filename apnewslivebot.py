@@ -134,11 +134,15 @@ def parse_live_page(topic_name: str, url: str):
     ld_json = None
     for script in soup.find_all("script", {"type": "application/ld+json"}):
         try:
-            data = json.loads(script.string)
+            raw = json.loads(script.string)
         except Exception:
             continue
-        if data.get("@type") == "LiveBlogPosting":
-            ld_json = data
+        entries = raw if isinstance(raw, list) else [raw]
+        for entry in entries:
+            if entry.get("@type") == "LiveBlogPosting":
+                ld_json = entry
+                break
+        if ld_json:
             break
 
     if not ld_json:
