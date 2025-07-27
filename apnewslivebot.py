@@ -199,6 +199,7 @@ def format_message(topic: str, title: str, url: str, ts_iso: str) -> str:
 def main():
     load_sent()
     logging.info("Bot started")
+    send_telegram_message("🔔 AP News Live Bot started")
 
     current_interval = CHECK_INTERVAL
     last_topics_seen_at = time.time()
