@@ -76,6 +76,37 @@ REL_SNIPPET = f"""
 </html>
 """
 
+# JSON-LD using "blogPost" key instead of "blogPosts"
+BLOGPOST_LD_JSON = {
+    "@context": "https://schema.org",
+    "@type": "LiveBlogPosting",
+    "blogPost": [
+        {
+            "@id": "b1",
+            "headline": "B One",
+            "url": "https://example.com/b1",
+            "datePublished": "2024-01-02T08:00:00Z",
+        },
+        {
+            "@id": "b2",
+            "headline": "B Two",
+            "url": "https://example.com/b2",
+            "datePublished": "2024-01-02T09:00:00Z",
+        },
+    ],
+}
+
+BLOGPOST_SNIPPET = f"""
+<html>
+<head>
+<script type='application/ld+json'>
+{json.dumps(BLOGPOST_LD_JSON)}
+</script>
+</head>
+<body></body>
+</html>
+"""
+
 
 def test_parse_live_page_chronological(monkeypatch):
     def mock_fetch(url, timeout=15, retries=3, backoff=3):
@@ -101,3 +132,16 @@ def test_parse_live_page_relative_urls(monkeypatch):
 
     assert len(posts) == 1
     assert posts[0][2] == apnewslivebot.HOMEPAGE_URL + "/article/rel1"
+
+
+def test_parse_live_page_blogPost_key(monkeypatch):
+    def mock_fetch(url, timeout=15, retries=3, backoff=3):
+        return BLOGPOST_SNIPPET
+
+    monkeypatch.setattr(apnewslivebot, "fetch", mock_fetch)
+    apnewslivebot.sent_post_ids.clear()
+
+    posts = apnewslivebot.parse_live_page("topic", "https://example.com/live")
+    titles = [p[1] for p in posts]
+
+    assert titles == ["B One", "B Two"]

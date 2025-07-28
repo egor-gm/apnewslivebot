@@ -149,7 +149,14 @@ def parse_live_page(topic_name: str, url: str):
         logging.warning(f"No LiveBlogPosting JSON-LD found for {topic_name}")
         return []
 
-    posts = ld_json.get("blogPosts") or ld_json.get("liveBlogUpdate", [])
+    # Newer pages might use singular "blogPost" or "liveBlogUpdates" keys
+    posts = (
+        ld_json.get("blogPosts")
+        or ld_json.get("blogPost")
+        or ld_json.get("liveBlogUpdate")
+        or ld_json.get("liveBlogUpdates")
+        or []
+    )
     new_items = []
     for post in posts:
         pid = post.get("@id") or post.get("url") or f"{post.get('headline')}_{post.get('datePublished')}"
