@@ -4,6 +4,7 @@ import json
 import logging
 import re
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from typing import Dict, Set
 
 import requests
@@ -174,7 +175,7 @@ def parse_live_page(topic_name: str, url: str):
     for post in posts:
         pid = post.get("@id") or post.get("url") or f"{post.get('headline')}_{post.get('datePublished', post.get('dateModified', ''))}"
         title = post.get("headline", "").strip() or post.get("name", "").strip()
-        permalink = post.get("url") or url
+        permalink = post.get("@id") or post.get("url") or url
         ts_iso = post.get("datePublished") or post.get("dateModified") or datetime.now(timezone.utc).isoformat()
         if pid and pid not in sent_post_ids:
             new_items.append((pid, title, permalink, ts_iso))
@@ -204,18 +205,26 @@ def send_telegram_message(text: str):
         logging.warning(f"Telegram exception: {e}")
 
 def format_message(topic: str, title: str, url: str, ts_iso: str) -> str:
-    safe_title = (
-        title.replace("_", "\\_")
-        .replace("*", "\\*")
-        .replace("[", "\\[")
-        .replace("`", "\\`")
-        .replace("(", "\\(")
-        .replace(")", "\\)")
-        .replace("~", "\\~")
-        .replace(">", "\\>")
-        .replace("#", "\\#")
-    )
-    return f"📰 *{topic}* | {safe_title}\n{ts_iso}\n{url}"
+    # Parse the ISO timestamp and convert to Central European Time
+    try:
+        dt = datetime.fromisoformat(ts_iso.replace("Z", "+00:00"))
+        cet = dt.astimezone(ZoneInfo("Europe/Paris"))
+        date_str = cet.strftime("%m/%d/%y")
+    except Exception:
+        date_str = ts_iso  # fallback to raw timestamp
+
+    # Determine share link: use '@id' if available, else fall back to url
+    share_link = url
+
+    # Build the message
+    lines = [
+        title,
+        "",
+        f"📰 {topic} - {date_str} (CET)",
+        "",
+        share_link
+    ]
+    return "\n".join(lines)
 
 
 # ---------- Delay calculation ----------
