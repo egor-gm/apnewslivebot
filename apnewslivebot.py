@@ -209,7 +209,7 @@ def format_message(topic: str, title: str, url: str, ts_iso: str) -> str:
     try:
         dt = datetime.fromisoformat(ts_iso.replace("Z", "+00:00"))
         cet = dt.astimezone(ZoneInfo("Europe/Paris"))
-        date_str = cet.strftime("%m/%d/%y")
+        date_str = cet.strftime("%m/%d/%y %H:%M")
     except Exception:
         date_str = ts_iso  # fallback to raw timestamp
 
@@ -220,7 +220,7 @@ def format_message(topic: str, title: str, url: str, ts_iso: str) -> str:
     lines = [
         title,
         "",
-        f"📰 {topic} - {date_str} (CET)",
+        f"📰 {topic} - {date_str} CET",
         "",
         share_link
     ]

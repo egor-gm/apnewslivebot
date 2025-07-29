@@ -5,6 +5,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 os.environ.setdefault("TELEGRAM_BOT_TOKEN", "test")
 os.environ.setdefault("TELEGRAM_CHANNEL_ID", "test")
 
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
+
 import apnewslivebot
 
 
@@ -28,7 +31,7 @@ def test_get_live_topics(monkeypatch):
     }
 
 
-def test_format_message_markdown():
+def test_format_message_plain():
     msg = apnewslivebot.format_message(
         "Tech",
         "Hello_world [update] *bold* `code`",
@@ -36,9 +39,14 @@ def test_format_message_markdown():
         "2024-01-01T00:00:00Z",
     )
 
-    expected_title = "Hello\\_world \\[update] \\*bold\\* \\`code\\`"
+    expected_date = (
+        datetime(2024, 1, 1, tzinfo=timezone.utc)
+        .astimezone(ZoneInfo("Europe/Paris"))
+        .strftime("%m/%d/%y %H:%M")
+    )
     expected = (
-        f"📰 *Tech* | {expected_title}\n"
-        "2024-01-01T00:00:00Z\nhttps://example.com/a"
+        "Hello_world [update] *bold* `code`\n\n"
+        f"📰 Tech - {expected_date} CET\n\n"
+        "https://example.com/a"
     )
     assert msg == expected

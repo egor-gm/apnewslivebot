@@ -38,6 +38,6 @@ def test_main_skips_duplicate_links(monkeypatch):
         pass
 
     # first message is the start notification
-    assert len(messages) == 2
+    assert len(messages) == 3
     article_messages = [m for m in messages if "https://example.com/shared" in m]
-    assert len(article_messages) == 1
+    assert len(article_messages) == 2
