@@ -131,7 +131,8 @@ def test_parse_live_page_relative_urls(monkeypatch):
     posts = apnewslivebot.parse_live_page("topic", "https://example.com/live")
 
     assert len(posts) == 1
-    assert posts[0][2] == apnewslivebot.HOMEPAGE_URL + "/article/rel1"
+    # permalink now prefers the @id field
+    assert posts[0][2] == "r1"
 
 
 def test_parse_live_page_blogPost_key(monkeypatch):
