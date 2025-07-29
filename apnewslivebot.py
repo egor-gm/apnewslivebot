@@ -268,12 +268,11 @@ def main():
                 new_posts.sort(key=lambda t: t[3] or "")
 
                 for pid, title, link, ts_iso in new_posts:
-                    if pid in sent_post_ids or link in sent_links:
+                    if pid in sent_post_ids:
                         continue
                     msg = format_message(topic_name, title, link, ts_iso)
                     send_telegram_message(msg)
                     sent_post_ids.add(pid)
-                    sent_links.add(link)
                     save_sent()
                     logging.info(f"Sent: {title}")
 
