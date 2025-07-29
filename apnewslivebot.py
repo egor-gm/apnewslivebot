@@ -131,6 +131,16 @@ def parse_live_page(topic_name: str, url: str):
     html = fetch(url)
     soup = BeautifulSoup(html, "html.parser")
 
+    # Map post id -> full share link from copy buttons
+    copy_links = {}
+    for cl in soup.find_all("bsp-copy-link"):
+        data_link = cl.get("data-link")
+        if not data_link:
+            continue
+        m = re.search(r"#([^#]+)$", data_link)
+        if m:
+            copy_links[m.group(1)] = data_link
+
     # Find the JSON-LD block for the live blog
     ld_json = None
     for script in soup.find_all("script", {"type": "application/ld+json"}):
@@ -177,6 +187,12 @@ def parse_live_page(topic_name: str, url: str):
         title = post.get("headline", "").strip() or post.get("name", "").strip()
         permalink = post.get("@id") or post.get("url") or url
         ts_iso = post.get("datePublished") or post.get("dateModified") or datetime.now(timezone.utc).isoformat()
+
+        if pid:
+            pid_fragment = pid.split("#")[-1]
+            if pid_fragment in copy_links:
+                permalink = copy_links[pid_fragment]
+
         if pid and pid not in sent_post_ids:
             new_items.append((pid, title, permalink, ts_iso))
     # Sort oldest → newest

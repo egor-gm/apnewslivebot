@@ -107,6 +107,22 @@ BLOGPOST_SNIPPET = f"""
 </html>
 """
 
+# HTML with copy links providing share URLs
+COPY_SNIPPET = f"""
+<html>
+<head>
+<script type='application/ld+json'>
+{json.dumps(LD_JSON)}
+</script>
+</head>
+<body>
+  <article id='p1'><bsp-copy-link data-link='https://example.com/live#p1'></bsp-copy-link></article>
+  <article id='p2'><bsp-copy-link data-link='https://example.com/live#p2'></bsp-copy-link></article>
+  <article id='p3'><bsp-copy-link data-link='https://example.com/live#p3'></bsp-copy-link></article>
+</body>
+</html>
+"""
+
 
 def test_parse_live_page_chronological(monkeypatch):
     def mock_fetch(url, timeout=15, retries=3, backoff=3):
@@ -146,3 +162,20 @@ def test_parse_live_page_blogPost_key(monkeypatch):
     titles = [p[1] for p in posts]
 
     assert titles == ["B One", "B Two"]
+
+
+def test_parse_live_page_copy_links(monkeypatch):
+    def mock_fetch(url, timeout=15, retries=3, backoff=3):
+        return COPY_SNIPPET
+
+    monkeypatch.setattr(apnewslivebot, "fetch", mock_fetch)
+    apnewslivebot.sent_post_ids.clear()
+
+    posts = apnewslivebot.parse_live_page("topic", "https://example.com/live")
+    links = [p[2] for p in posts]
+
+    assert links == [
+        "https://example.com/live#p1",
+        "https://example.com/live#p2",
+        "https://example.com/live#p3",
+    ]
