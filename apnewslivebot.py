@@ -149,13 +149,33 @@ def parse_live_page(topic_name: str, url: str):
         logging.warning(f"No LiveBlogPosting JSON-LD found for {topic_name}")
         return []
 
-    posts = ld_json.get("blogPosts") or ld_json.get("liveBlogUpdate", [])
+    # Attempt to find update arrays by known keys
+    posts = []
+    for key in ("blogPosts", "liveBlogUpdate", "updates"):
+        val = ld_json.get(key)
+        if isinstance(val, list):
+            posts = val
+            break
+        elif isinstance(val, dict):
+            posts = [val]
+            break
+    # Fallback: any list of dicts in ld_json
+    if not posts:
+        for val in ld_json.values():
+            if isinstance(val, list) and val and isinstance(val[0], dict):
+                posts = val
+                break
+
+    if not posts:
+        logging.warning(f"No update list found in JSON-LD for {topic_name}: keys={list(ld_json.keys())}")
+        return []
+
     new_items = []
     for post in posts:
-        pid = post.get("@id") or post.get("url") or f"{post.get('headline')}_{post.get('datePublished')}"
-        title = post.get("headline", "").strip()
+        pid = post.get("@id") or post.get("url") or f"{post.get('headline')}_{post.get('datePublished', post.get('dateModified', ''))}"
+        title = post.get("headline", "").strip() or post.get("name", "").strip()
         permalink = post.get("url") or url
-        ts_iso = post.get("datePublished") or post.get("dateModified")
+        ts_iso = post.get("datePublished") or post.get("dateModified") or datetime.now(timezone.utc).isoformat()
         if pid and pid not in sent_post_ids:
             new_items.append((pid, title, permalink, ts_iso))
     # Sort oldest → newest
