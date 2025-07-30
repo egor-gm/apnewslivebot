@@ -137,9 +137,14 @@ def parse_live_page(topic_name: str, url: str):
         data_link = cl.get("data-link")
         if not data_link:
             continue
+        full_link = normalize_url(data_link)
         m = re.search(r"#([^#]+)$", data_link)
         if m:
-            copy_links[m.group(1)] = data_link
+            copy_links[m.group(1)] = full_link
+        # also map the parent article id if available
+        parent = cl.find_parent("article")
+        if parent and parent.get("id"):
+            copy_links[parent["id"]] = full_link
 
     # Find the JSON-LD block for the live blog
     ld_json = None
@@ -186,12 +191,16 @@ def parse_live_page(topic_name: str, url: str):
         pid = post.get("@id") or post.get("url") or f"{post.get('headline')}_{post.get('datePublished', post.get('dateModified', ''))}"
         title = post.get("headline", "").strip() or post.get("name", "").strip()
         permalink = post.get("@id") or post.get("url") or url
+        if isinstance(permalink, str) and permalink.startswith("/"):
+            permalink = normalize_url(permalink)
         ts_iso = post.get("datePublished") or post.get("dateModified") or datetime.now(timezone.utc).isoformat()
 
         if pid:
             pid_fragment = pid.split("#")[-1]
             if pid_fragment in copy_links:
                 permalink = copy_links[pid_fragment]
+            elif pid in copy_links:
+                permalink = copy_links[pid]
 
         if pid and pid not in sent_post_ids:
             new_items.append((pid, title, permalink, ts_iso))
@@ -229,12 +238,15 @@ def format_message(topic: str, title: str, url: str, ts_iso: str) -> str:
     except Exception:
         date_str = ts_iso  # fallback to raw timestamp
 
+    # Clean any HTML tags in the title
+    clean_title = BeautifulSoup(title, "html.parser").get_text()
+
     # Determine share link: use '@id' if available, else fall back to url
     share_link = url
 
     # Build the message
     lines = [
-        title,
+        clean_title,
         "",
         f"📰 {topic} - {date_str} CET",
         "",

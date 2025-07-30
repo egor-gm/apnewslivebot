@@ -123,6 +123,20 @@ COPY_SNIPPET = f"""
 </html>
 """
 
+# Copy links using relative paths
+COPY_REL_SNIPPET = f"""
+<html>
+<head>
+<script type='application/ld+json'>
+{json.dumps(LD_JSON)}
+</script>
+</head>
+<body>
+  <article id='p1'><bsp-copy-link data-link='/live#p1'></bsp-copy-link></article>
+</body>
+</html>
+"""
+
 
 def test_parse_live_page_chronological(monkeypatch):
     def mock_fetch(url, timeout=15, retries=3, backoff=3):
@@ -179,3 +193,15 @@ def test_parse_live_page_copy_links(monkeypatch):
         "https://example.com/live#p2",
         "https://example.com/live#p3",
     ]
+
+
+def test_parse_live_page_copy_links_relative(monkeypatch):
+    def mock_fetch(url, timeout=15, retries=3, backoff=3):
+        return COPY_REL_SNIPPET
+
+    monkeypatch.setattr(apnewslivebot, "fetch", mock_fetch)
+    apnewslivebot.sent_post_ids.clear()
+
+    posts = apnewslivebot.parse_live_page("topic", "https://example.com/live")
+    assert len(posts) == 3
+    assert posts[0][2] == "https://apnews.com/live#p1"

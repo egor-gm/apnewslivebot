@@ -28,3 +28,22 @@ def test_format_message_plain_text():
     expected = f"{title}\n\n📰 Topic - {expected_date} CET\n\nhttps://example.com"
     assert msg == expected
 
+
+def test_format_message_strips_html():
+    title = "<b>AP poll tracker: Trump's disapproval</b>"
+    msg = apnewslivebot.format_message(
+        "Topic",
+        title,
+        "https://example.com",
+        "2024-01-01T00:00:00Z",
+    )
+
+    expected_date = (
+        datetime(2024, 1, 1, tzinfo=timezone.utc)
+        .astimezone(ZoneInfo("Europe/Paris"))
+        .strftime("%m/%d/%y %H:%M")
+    )
+    expected_title = "AP poll tracker: Trump's disapproval"
+    expected = f"{expected_title}\n\n📰 Topic - {expected_date} CET\n\nhttps://example.com"
+    assert msg == expected
+
