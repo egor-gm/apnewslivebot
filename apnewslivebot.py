@@ -220,11 +220,13 @@ def parse_live_page(topic_name: str, url: str):
 
     new_items = []
     for post in posts:
-        pid = post.get("@id") or post.get("url") or f"{post.get('headline')}_{post.get('datePublished', post.get('dateModified', ''))}"
+        pid = (
+            post.get("@id")
+            or post.get("url")
+            or f"{post.get('headline')}_{post.get('datePublished', post.get('dateModified', ''))}"
+        )
         title = post.get("headline", "").strip() or post.get("name", "").strip()
-        permalink = post.get("@id") or post.get("url") or url
-        if isinstance(permalink, str) and permalink.startswith("/"):
-            permalink = normalize_url(permalink)
+        permalink = url  # start with the live page URL
         ts_iso = post.get("datePublished") or post.get("dateModified") or datetime.now(timezone.utc).isoformat()
 
         if pid:
@@ -233,6 +235,8 @@ def parse_live_page(topic_name: str, url: str):
                 permalink = copy_links[pid_fragment]
             elif pid in copy_links:
                 permalink = copy_links[pid]
+            else:
+                permalink = f"{url}#{pid_fragment}"
 
         if pid and pid not in sent_post_ids:
             new_items.append((pid, title, permalink, ts_iso))
