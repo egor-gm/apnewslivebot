@@ -9,6 +9,7 @@ from typing import Dict, Set
 
 import requests
 from bs4 import BeautifulSoup
+from upstash_redis import Redis
 
 # ---------- Config via environment variables ----------
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -30,6 +31,18 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
 )
 
+# ---------- Optional Upstash Redis ----------
+REDIS_URL = os.environ.get("UPSTASH_REDIS_REST_URL")
+REDIS_TOKEN = os.environ.get("UPSTASH_REDIS_REST_TOKEN")
+redis_client = None
+if REDIS_URL and REDIS_TOKEN:
+    try:
+        redis_client = Redis(url=REDIS_URL, token=REDIS_TOKEN)
+        logging.info("Using Upstash Redis for state storage")
+    except Exception as e:
+        logging.warning(f"Redis init failed: {e}")
+        redis_client = None
+
 # ---------- Persistence (sent links) ----------
 SENT_FILE = "sent.json"
 sent_links: Set[str] = set()
@@ -37,6 +50,16 @@ sent_post_ids: Set[str] = set()  # track LiveBlogPost IDs that were sent
 
 def load_sent():
     global sent_links, sent_post_ids
+    if redis_client:
+        try:
+            sent_links = set(redis_client.smembers("sent_links") or [])
+            sent_post_ids = set(redis_client.smembers("sent_post_ids") or [])
+            logging.info(
+                f"Loaded {len(sent_links)} links and {len(sent_post_ids)} post_ids from Redis"
+            )
+            return
+        except Exception as e:
+            logging.warning(f"Could not load from Redis: {e}")
     if os.path.isfile(SENT_FILE):
         try:
             with open(SENT_FILE, "r", encoding="utf-8") as f:
@@ -55,6 +78,15 @@ def load_sent():
 
 def save_sent():
     try:
+        if redis_client:
+            try:
+                redis_client.delete("sent_links", "sent_post_ids")
+                if sent_links:
+                    redis_client.sadd("sent_links", *sent_links)
+                if sent_post_ids:
+                    redis_client.sadd("sent_post_ids", *sent_post_ids)
+            except Exception as e:
+                logging.warning(f"Could not save to Redis: {e}")
         with open(SENT_FILE, "w", encoding="utf-8") as f:
             json.dump(
                 {"links": list(sent_links), "post_ids": list(sent_post_ids)}, f
