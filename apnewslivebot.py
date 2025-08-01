@@ -107,6 +107,21 @@ def get_live_topics() -> Dict[str, str]:
 
 # ---------- Parse live topic page for article links ----------
 ARTICLE_HREF_RE = re.compile(r"^(/article|https://apnews\.com/article)")
+# pattern for AP's internal uuid style used for update anchors
+UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+
+def find_update_id(a_tag) -> str:
+    """Return update element id close to anchor if present."""
+    elem = a_tag
+    for _ in range(4):
+        if not elem:
+            break
+        if elem.has_attr("id") and UUID_RE.match(elem["id"]):
+            return elem["id"]
+        if elem.has_attr("data-key") and UUID_RE.match(elem["data-key"]):
+            return elem["data-key"]
+        elem = elem.parent
+    return ""
 
 def parse_live_page(topic_name: str, url: str) -> List[Tuple[str, str, str]]:
     """
@@ -128,15 +143,18 @@ def parse_live_page(topic_name: str, url: str) -> List[Tuple[str, str, str]]:
         # Basic normalize remove tracking queries
         if "?" in full:
             full = full.split("?", 1)[0]
-        if full in sent_links:
-            continue
         title = a.get_text(" ", strip=True)
         # Filter out empty or nav duplicates
         if not title or title.lower().startswith("live:"):
             continue
 
+        anchor_id = find_update_id(a)
+        live_url = f"{url}#{anchor_id}" if anchor_id else url
+        if live_url in sent_links:
+            continue
+
         ts_iso = extract_time(a)  # try from page
-        new_items.append((title, full, ts_iso))
+        new_items.append((title, live_url, ts_iso))
     return dedupe_order_preserving(new_items)
 
 def dedupe_order_preserving(items: List[Tuple[str, str, str]]) -> List[Tuple[str, str, str]]:
