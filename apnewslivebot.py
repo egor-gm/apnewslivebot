@@ -271,15 +271,25 @@ def resolve_post_permalink(soup: BeautifulSoup,
                            live_url: str,
                            copy_links: Dict[str, str],
                            post_id: Optional[str],
+                           post_url: Optional[str],
                            title: str,
                            ts_iso: str) -> str:
     """Return the best permalink for a post with a fragment that matches UI copy-link.
     Preference order:
+      0) If JSON-LD post_url already contains a #fragment, trust it
       1) Exact match via bsp-copy-link mapping (by id or its fragment)
       2) Match article heading text to get its <article id>
       3) Match by nearest <time datetime> to get parent <article id>
       4) Fallback: live_url (no fragment) to avoid wrong fragments
     """
+    # 0) If JSON-LD already provides a URL with a fragment, prefer it
+    if post_url:
+        pu = str(post_url).strip()
+        if pu.startswith("#"):
+            return f"{live_url}{pu}"
+        if "#" in pu:
+            return normalize_url(pu)
+
     # 1) use explicit copy-link mapping if available
     if post_id:
         frag = str(post_id).split("#")[-1]
@@ -300,6 +310,7 @@ def resolve_post_permalink(soup: BeautifulSoup,
         return f"{live_url}#{aid}"
 
     # 4) fallback: live page without fragment
+    logging.warning("Falling back to live_url without fragment; no anchor could be resolved for title '%s'", title)
     return live_url
 
 
@@ -363,7 +374,7 @@ def parse_live_page(topic_name: str, url: str, html: Optional[str] = None) -> Li
         # do not overwrite an explicit copy/share link if we already captured one
         copy_links.setdefault(aid, url_with_frag)
 
-    # Find the JSON-LD block for the live blog
+    # Find the JSON-LD block for the live blog, including inside @graph arrays
     ld_json = None
     for script in soup.find_all("script", {"type": "application/ld+json"}):
         try:
@@ -373,11 +384,34 @@ def parse_live_page(topic_name: str, url: str, html: Optional[str] = None) -> Li
             raw = json.loads(raw_text)
         except Exception:
             continue
+        # If raw is a dict and has @graph, search inside it
+        if isinstance(raw, dict) and "@graph" in raw and isinstance(raw["@graph"], list):
+            for entry in raw["@graph"]:
+                if not isinstance(entry, dict):
+                    continue
+                typ = entry.get("@type")
+                if isinstance(typ, str):
+                    if typ == "LiveBlogPosting":
+                        ld_json = entry
+                        break
+                elif isinstance(typ, list):
+                    if "LiveBlogPosting" in typ:
+                        ld_json = entry
+                        break
+            if ld_json:
+                break
+        # Otherwise, treat as normal
         entries = raw if isinstance(raw, list) else [raw]
         for entry in entries:
-            if entry.get("@type") == "LiveBlogPosting":
-                ld_json = entry
-                break
+            typ = entry.get("@type")
+            if isinstance(typ, str):
+                if typ == "LiveBlogPosting":
+                    ld_json = entry
+                    break
+            elif isinstance(typ, list):
+                if "LiveBlogPosting" in typ:
+                    ld_json = entry
+                    break
         if ld_json:
             break
 
@@ -417,6 +451,7 @@ def parse_live_page(topic_name: str, url: str, html: Optional[str] = None) -> Li
         )
         title = post.get("headline", "").strip() or post.get("name", "").strip()
         ts_iso = post.get("datePublished") or post.get("dateModified") or datetime.now(timezone.utc).isoformat()
+        post_url = post.get("url") or post.get("mainEntityOfPage")
 
         # Resolve the most accurate permalink with a correct fragment
         permalink = resolve_post_permalink(
@@ -424,6 +459,7 @@ def parse_live_page(topic_name: str, url: str, html: Optional[str] = None) -> Li
             live_url=url,
             copy_links=copy_links,
             post_id=str(pid) if pid else None,
+            post_url=post_url,
             title=title,
             ts_iso=ts_iso,
         )
@@ -599,6 +635,62 @@ def _self_test() -> None:
     # Simulate send (DRY_RUN recommended when running SELF_TEST)
     if DRY_RUN:
         send_telegram_message(msg)
+
+    # Case A: JSON-LD supplies absolute post.url with fragment; no DOM anchors present
+    live_html_only_ld = """
+    <html><body>
+      <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "LiveBlogPosting",
+        "liveBlogUpdate": [
+          {
+            "@id": "abc-1",
+            "headline": "Headline A",
+            "datePublished": "2025-08-05T22:00:00Z",
+            "url": "https://apnews.com/live/world-news/foobar#post-aaa"
+          },
+          {
+            "@id": "abc-2",
+            "headline": "Headline B",
+            "datePublished": "2025-08-05T23:00:00Z",
+            "url": "/live/world-news/foobar#post-bbb"
+          }
+        ]
+      }
+      </script>
+    </body></html>
+    """
+    items2 = parse_live_page("World updates", fake_url, html=live_html_only_ld)
+    assert items2 and items2[0][2].endswith("#post-aaa"), f"Expected fragment from absolute url, got {items2}"
+    assert items2[1][2].endswith("#post-bbb"), f"Expected fragment from relative url, got {items2}"
+
+    # Case B: JSON-LD using @graph and @type as list
+    live_html_graph = """
+    <html><body>
+      <script type=\"application/ld+json\">
+      {
+        "@context": "https://schema.org",
+        "@graph": [
+          {"@type": ["BreadcrumbList"]},
+          {
+            "@type": ["NewsArticle", "LiveBlogPosting"],
+            "updates": [
+              {
+                "@id": "g1",
+                "headline": "Graph Headline",
+                "datePublished": "2025-08-05T22:30:00Z",
+                "url": "#graph-post"
+              }
+            ]
+          }
+        ]
+      }
+      </script>
+    </body></html>
+    """
+    items3 = parse_live_page("World updates", fake_url, html=live_html_graph)
+    assert items3 and items3[0][2].endswith("#graph-post"), f"Expected fragment from graph url, got {items3}"
 
     logging.info("SELF_TEST passed")
 
