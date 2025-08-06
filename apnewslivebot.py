@@ -4,6 +4,7 @@ import json
 import logging
 import re
 import signal
+import unicodedata
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 from typing import Dict, Set, List, Optional, Tuple
@@ -199,6 +200,109 @@ def normalize_url(href: str) -> str:
     return href if href.startswith("http") else HOMEPAGE_URL + href
 
 
+# --- Permalink resolution helpers ---
+GUID_LIKE_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
+
+
+def _norm_text(s: str) -> str:
+    if not s:
+        return ""
+    s = unicodedata.normalize("NFKC", s)
+    s = s.replace("\u2019", "'")  # curly apostrophe to straight
+    s = re.sub(r"\s+", " ", s).strip().lower()
+    return s
+
+
+def _build_article_index(soup: BeautifulSoup) -> Dict[str, str]:
+    """Map normalized heading text -> article id for GUID-like ids.
+    Looks for <article id="..."> with an <h1|h2|h3> inside.
+    """
+    index: Dict[str, str] = {}
+    for art in soup.find_all("article"):
+        aid = (art.get("id") or "").strip()
+        if not aid:
+            continue
+        # keep ids that look like GUIDs (00000198-... is also GUID-like)
+        if not GUID_LIKE_RE.match(aid) and len(aid.split("-")) != 5:
+            continue
+        h = art.find(["h1", "h2", "h3"]) or art.find(class_=re.compile(r"headline|title", re.I))
+        if not h:
+            continue
+        heading = h.get_text(" ", strip=True)
+        key = _norm_text(heading)
+        if key and key not in index:
+            index[key] = aid
+    return index
+
+
+def _find_article_id_by_time(soup: BeautifulSoup, ts_iso: str) -> Optional[str]:
+    """Heuristic: find the <article> whose <time datetime> is closest to ts_iso.
+    Returns its id if it looks GUID-like.
+    """
+    try:
+        target = datetime.fromisoformat(ts_iso.replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+    closest: Tuple[float, Optional[str]] = (float("inf"), None)
+    for t in soup.find_all("time"):
+        dt_attr = t.get("datetime") or t.get("data-datetime")
+        if not dt_attr:
+            continue
+        try:
+            dt_val = datetime.fromisoformat(dt_attr.replace("Z", "+00:00"))
+        except Exception:
+            continue
+        diff = abs((dt_val - target).total_seconds())
+        art = t.find_parent("article")
+        aid = (art.get("id") if art else None) or None
+        if not aid:
+            continue
+        if not GUID_LIKE_RE.match(aid) and len(aid.split("-")) != 5:
+            continue
+        if diff < closest[0]:
+            closest = (diff, aid)
+
+    # accept if within 12 hours to be safe; tune as needed
+    return closest[1] if closest[0] <= 12 * 3600 else None
+
+
+def resolve_post_permalink(soup: BeautifulSoup,
+                           live_url: str,
+                           copy_links: Dict[str, str],
+                           post_id: Optional[str],
+                           title: str,
+                           ts_iso: str) -> str:
+    """Return the best permalink for a post with a fragment that matches UI copy-link.
+    Preference order:
+      1) Exact match via bsp-copy-link mapping (by id or its fragment)
+      2) Match article heading text to get its <article id>
+      3) Match by nearest <time datetime> to get parent <article id>
+      4) Fallback: live_url (no fragment) to avoid wrong fragments
+    """
+    # 1) use explicit copy-link mapping if available
+    if post_id:
+        frag = str(post_id).split("#")[-1]
+        if frag in copy_links:
+            return copy_links[frag]
+        if post_id in copy_links:
+            return copy_links[post_id]
+
+    # 2) match by heading text
+    idx = _build_article_index(soup)
+    key = _norm_text(title)
+    if key and key in idx:
+        return f"{live_url}#{idx[key]}"
+
+    # 3) match by nearest timestamp
+    aid = _find_article_id_by_time(soup, ts_iso)
+    if aid:
+        return f"{live_url}#{aid}"
+
+    # 4) fallback: live page without fragment
+    return live_url
+
+
 def parse_live_page(topic_name: str, url: str, html: Optional[str] = None) -> List[Tuple[str, str, str, str]]:
     """Scrape via the JSON-LD <script type="application/ld+json"> of type LiveBlogPosting.
 
@@ -277,17 +381,17 @@ def parse_live_page(topic_name: str, url: str, html: Optional[str] = None) -> Li
             or f"{post.get('headline')}_{post.get('datePublished', post.get('dateModified', ''))}"
         )
         title = post.get("headline", "").strip() or post.get("name", "").strip()
-        permalink = url  # start with the live page URL
         ts_iso = post.get("datePublished") or post.get("dateModified") or datetime.now(timezone.utc).isoformat()
 
-        if pid:
-            pid_fragment = str(pid).split("#")[-1]
-            if pid_fragment in copy_links:
-                permalink = copy_links[pid_fragment]
-            elif pid in copy_links:
-                permalink = copy_links[pid]
-            else:
-                permalink = f"{url}#{pid_fragment}"
+        # Resolve the most accurate permalink with a correct fragment
+        permalink = resolve_post_permalink(
+            soup=soup,
+            live_url=url,
+            copy_links=copy_links,
+            post_id=str(pid) if pid else None,
+            title=title,
+            ts_iso=ts_iso,
+        )
 
         if pid and pid not in sent_post_ids:
             new_items.append((str(pid), title, permalink, ts_iso))
