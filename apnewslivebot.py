@@ -313,20 +313,55 @@ def parse_live_page(topic_name: str, url: str, html: Optional[str] = None) -> Li
         html = fetch(url)
     soup = BeautifulSoup(html, "html.parser")
 
-    # Map post id -> full share link from copy buttons
+    # Map post id -> full share/permalink from multiple sources
     copy_links: Dict[str, str] = {}
+
+    # 1) <bsp-copy-link data-link="...#fragment">
     for cl in soup.find_all("bsp-copy-link"):
         data_link = cl.get("data-link")
         if not data_link:
             continue
-        full_link = normalize_url(data_link)
-        m = re.search(r"#([^#]+)$", data_link)
+        # normalize to absolute and extract fragment
+        full_link = normalize_url(data_link) if not data_link.startswith("#") else f"{url}{data_link}"
+        m = re.search(r"#([^#]+)$", full_link)
         if m:
             copy_links[m.group(1)] = full_link
         # also map the parent article id if available
         parent = cl.find_parent("article")
         if parent and parent.get("id"):
             copy_links[parent["id"]] = full_link
+
+    # 2) Any element with data-clipboard-text that looks like a URL with a #fragment
+    for el in soup.find_all(attrs={"data-clipboard-text": True}):
+        raw = (el.get("data-clipboard-text") or "").strip()
+        if not raw or "#" not in raw:
+            continue
+        full_link = normalize_url(raw) if not raw.startswith("#") else f"{url}{raw}"
+        m = re.search(r"#([^#]+)$", full_link)
+        if m:
+            copy_links[m.group(1)] = full_link
+
+    # 3) <a href="...#fragment"> anywhere on the page (including inside articles)
+    for a in soup.find_all("a", href=True):
+        href = a["href"].strip()
+        if "#" not in href:
+            continue
+        full_link = normalize_url(href) if not href.startswith("#") else f"{url}{href}"
+        m = re.search(r"#([^#]+)$", full_link)
+        if m:
+            copy_links[m.group(1)] = full_link
+
+    # 4) Seed known <article id> values so direct id matches can resolve immediately
+    for art in soup.find_all("article"):
+        aid = (art.get("id") or "").strip()
+        if not aid:
+            continue
+        # keep ids that look like GUIDs (00000198-... is also GUID-like)
+        if not GUID_LIKE_RE.match(aid) and len(aid.split("-")) != 5:
+            continue
+        url_with_frag = f"{url}#{aid}"
+        # do not overwrite an explicit copy/share link if we already captured one
+        copy_links.setdefault(aid, url_with_frag)
 
     # Find the JSON-LD block for the live blog
     ld_json = None
