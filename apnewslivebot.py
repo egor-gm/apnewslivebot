@@ -8,8 +8,14 @@ from zoneinfo import ZoneInfo
 from typing import Dict, Set
 
 import requests
+import cloudscraper
 from bs4 import BeautifulSoup
 from upstash_redis import Redis
+
+
+scraper = cloudscraper.create_scraper(
+    browser={"browser": "chrome", "platform": "windows", "mobile": False}
+)
 
 # ---------- Config via environment variables ----------
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -100,9 +106,22 @@ def fetch(url: str, timeout=15, retries=3, backoff=3) -> str:
         "User-Agent": "Mozilla/5.0 (MonitoringBot; +https://github.com/you/yourbot)",
         "Accept": "text/html,application/xhtml+xml",
     }
+    global scraper
     for attempt in range(1, retries + 1):
         try:
-            resp = requests.get(url, headers=headers, timeout=timeout)
+            resp = scraper.get(url, headers=headers, timeout=timeout)
+            if resp.status_code == 403:
+                logging.warning(
+                    f"403 for {url} attempt {attempt} – recreating scraper"
+                )
+                scraper = cloudscraper.create_scraper(
+                    browser={"browser": "chrome", "platform": "windows", "mobile": False}
+                )
+                if attempt == retries:
+                    resp.raise_for_status()
+                else:
+                    time.sleep(backoff * attempt)
+                    continue
             resp.raise_for_status()
             return resp.text
         except Exception as e:
