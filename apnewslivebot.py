@@ -204,6 +204,7 @@ def normalize_url(href: str) -> str:
 GUID_LIKE_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
 
 
+
 def _norm_text(s: str) -> str:
     if not s:
         return ""
@@ -213,16 +214,75 @@ def _norm_text(s: str) -> str:
     return s
 
 
-def _build_article_index(soup: BeautifulSoup) -> Dict[str, str]:
-    """Map normalized heading text -> article id for GUID-like ids.
-    Looks for <article id="..."> with an <h1|h2|h3> inside.
+# --- AP live blog helpers ---
+def _build_livepost_index(soup: BeautifulSoup) -> Dict[str, str]:
+    """Map normalized headline text -> fragment id for <bsp-liveblog-post> blocks.
+    Uses each post's data-post-id and its visible <h2 class="LiveBlogPost-headline"> text.
     """
     index: Dict[str, str] = {}
+    for post in soup.find_all("bsp-liveblog-post"):
+        pid = (post.get("data-post-id") or "").strip()
+        if not pid:
+            continue
+        # headline lives here on AP live blogs
+        h = post.find("h2", class_=re.compile(r"LiveBlogPost-headline", re.I)) or post.find(["h1", "h2", "h3"]) 
+        heading = h.get_text(" ", strip=True) if h else ""
+        key = _norm_text(heading)
+        if key and pid and key not in index:
+            index[key] = pid
+    return index
+
+
+def _find_livepost_id_by_time(soup: BeautifulSoup, ts_iso: str) -> Optional[str]:
+    """Find the <bsp-liveblog-post> whose data-posted-date-timestamp is closest to ts_iso.
+    Accepts if within 12 hours.
+    """
+    try:
+        target = datetime.fromisoformat(ts_iso.replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+    closest: Tuple[float, Optional[str]] = (float("inf"), None)
+    for post in soup.find_all("bsp-liveblog-post"):
+        pid = (post.get("data-post-id") or "").strip()
+        ts_ms = post.get("data-posted-date-timestamp")
+        if not pid or not ts_ms:
+            continue
+        try:
+            dt_val = datetime.fromtimestamp(int(ts_ms) / 1000, tz=timezone.utc)
+        except Exception:
+            continue
+        diff = abs((dt_val - target).total_seconds())
+        if diff < closest[0]:
+            closest = (diff, pid)
+    return closest[1] if closest[0] <= 12 * 3600 else None
+
+
+
+def _build_article_index(soup: BeautifulSoup) -> Dict[str, str]:
+    """Map normalized heading text -> article/post id.
+    Supports both traditional <article id> blocks and AP's <bsp-liveblog-post> blocks.
+    """
+    index: Dict[str, str] = {}
+
+    # 1) AP live blog posts
+    for post in soup.find_all("bsp-liveblog-post"):
+        pid = (post.get("data-post-id") or "").strip()
+        if not pid:
+            continue
+        h = post.find("h2", class_=re.compile(r"LiveBlogPost-headline", re.I)) or post.find(["h1", "h2", "h3"]) 
+        if not h:
+            continue
+        heading = h.get_text(" ", strip=True)
+        key = _norm_text(heading)
+        if key and key not in index:
+            index[key] = pid
+
+    # 2) Generic <article id="..."> fallback
     for art in soup.find_all("article"):
         aid = (art.get("id") or "").strip()
         if not aid:
             continue
-        # keep ids that look like GUIDs (00000198-... is also GUID-like)
         if not GUID_LIKE_RE.match(aid) and len(aid.split("-")) != 5:
             continue
         h = art.find(["h1", "h2", "h3"]) or art.find(class_=re.compile(r"headline|title", re.I))
@@ -232,18 +292,26 @@ def _build_article_index(soup: BeautifulSoup) -> Dict[str, str]:
         key = _norm_text(heading)
         if key and key not in index:
             index[key] = aid
+
     return index
 
 
+
 def _find_article_id_by_time(soup: BeautifulSoup, ts_iso: str) -> Optional[str]:
-    """Heuristic: find the <article> whose <time datetime> is closest to ts_iso.
-    Returns its id if it looks GUID-like.
+    """Heuristic: try AP <bsp-liveblog-post> timestamps first, then generic <time>.
+    Returns a GUID-like id or None.
     """
     try:
         target = datetime.fromisoformat(ts_iso.replace("Z", "+00:00"))
     except Exception:
         return None
 
+    # A) AP live blog posts
+    best_live = _find_livepost_id_by_time(soup, ts_iso)
+    if best_live:
+        return best_live
+
+    # B) Generic <time> under <article>
     closest: Tuple[float, Optional[str]] = (float("inf"), None)
     for t in soup.find_all("time"):
         dt_attr = t.get("datetime") or t.get("data-datetime")
@@ -262,8 +330,6 @@ def _find_article_id_by_time(soup: BeautifulSoup, ts_iso: str) -> Optional[str]:
             continue
         if diff < closest[0]:
             closest = (diff, aid)
-
-    # accept if within 12 hours to be safe; tune as needed
     return closest[1] if closest[0] <= 12 * 3600 else None
 
 
@@ -278,8 +344,8 @@ def resolve_post_permalink(soup: BeautifulSoup,
     Preference order:
       0) If JSON-LD post_url already contains a #fragment, trust it
       1) Exact match via bsp-copy-link mapping (by id or its fragment)
-      2) Match article heading text to get its <article id>
-      3) Match by nearest <time datetime> to get parent <article id>
+      2) Match article heading text to get its <article/post id> (AP live blog supported)
+      3) Match by nearest timestamp (prefers <bsp-liveblog-post> timestamps)
       4) Fallback: live_url (no fragment) to avoid wrong fragments
     """
     # 0) If JSON-LD already provides a URL with a fragment, prefer it
@@ -298,13 +364,14 @@ def resolve_post_permalink(soup: BeautifulSoup,
         if post_id in copy_links:
             return copy_links[post_id]
 
-    # 2) match by heading text
-    idx = _build_article_index(soup)
+    # 2) match by heading text (AP live blog <bsp-liveblog-post>)
+    idx = _build_article_index(soup)  # now supports both live posts and <article>
     key = _norm_text(title)
     if key and key in idx:
-        return f"{live_url}#{idx[key]}"
+        frag = idx[key]
+        return f"{live_url}#{frag}"
 
-    # 3) match by nearest timestamp
+    # 3) match by nearest timestamp (prefers <bsp-liveblog-post> timestamps)
     aid = _find_article_id_by_time(soup, ts_iso)
     if aid:
         return f"{live_url}#{aid}"
@@ -362,17 +429,18 @@ def parse_live_page(topic_name: str, url: str, html: Optional[str] = None) -> Li
         if m:
             copy_links[m.group(1)] = full_link
 
-    # 4) Seed known <article id> values so direct id matches can resolve immediately
+    # 4) Seed known id values from both <bsp-liveblog-post> and <article>
+    for post in soup.find_all("bsp-liveblog-post"):
+        pid = (post.get("data-post-id") or "").strip()
+        if pid:
+            copy_links.setdefault(pid, f"{url}#{pid}")
     for art in soup.find_all("article"):
         aid = (art.get("id") or "").strip()
         if not aid:
             continue
-        # keep ids that look like GUIDs (00000198-... is also GUID-like)
         if not GUID_LIKE_RE.match(aid) and len(aid.split("-")) != 5:
             continue
-        url_with_frag = f"{url}#{aid}"
-        # do not overwrite an explicit copy/share link if we already captured one
-        copy_links.setdefault(aid, url_with_frag)
+        copy_links.setdefault(aid, f"{url}#{aid}")
 
     # Find the JSON-LD block for the live blog, including inside @graph arrays
     ld_json = None
@@ -691,6 +759,34 @@ def _self_test() -> None:
     """
     items3 = parse_live_page("World updates", fake_url, html=live_html_graph)
     assert items3 and items3[0][2].endswith("#graph-post"), f"Expected fragment from graph url, got {items3}"
+
+
+    # Case C: AP live blog DOM only (no per-update URLs), resolve by headline and data-posted-date-timestamp
+    live_html_ap = f"""
+    <html><body>
+      <bsp-liveblog-post class="LiveBlogPost" data-post-id="p-111" data-posted-date-timestamp="{int(datetime(2025,8,6,22,25,tzinfo=timezone.utc).timestamp()*1000)}">
+        <a class="LiveBlogPost-anchor" id="p-111"></a>
+        <h2 class="LiveBlogPost-headline">Alpha headline</h2>
+      </bsp-liveblog-post>
+      <bsp-liveblog-post class="LiveBlogPost" data-post-id="p-222" data-posted-date-timestamp="{int(datetime(2025,8,6,23,15,tzinfo=timezone.utc).timestamp()*1000)}">
+        <a class="LiveBlogPost-anchor" id="p-222"></a>
+        <h2 class="LiveBlogPost-headline">Beta headline</h2>
+      </bsp-liveblog-post>
+      <script type="application/ld+json">
+      {{
+        "@context":"https://schema.org",
+        "@type":"LiveBlogPosting",
+        "liveBlogUpdate":[
+          {{"@type":"BlogPosting","@id":"x1","headline":"Alpha headline","datePublished":"2025-08-06T22:25:00Z"}},
+          {{"@type":"BlogPosting","@id":"x2","headline":"Beta headline","datePublished":"2025-08-06T23:15:00Z"}}
+        ]
+      }}
+      </script>
+    </body></html>
+    """
+    items_ap = parse_live_page("AP Live", "https://example.com/live/ap", html=live_html_ap)
+    assert items_ap and items_ap[0][2].endswith("#p-111"), f"Expected #p-111, got {items_ap}"
+    assert items_ap[1][2].endswith("#p-222"), f"Expected #p-222, got {items_ap}"
 
     logging.info("SELF_TEST passed")
 
