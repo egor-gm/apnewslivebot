@@ -2,6 +2,7 @@ import os
 import time
 import json
 import logging
+import sys
 import re
 import signal
 import unicodedata
@@ -77,6 +78,7 @@ HOMEPAGE_URL = "https://apnews.com"
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
+    stream=sys.stdout,
 )
 
 # ---------- Optional Upstash Redis ----------
