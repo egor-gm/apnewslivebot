@@ -13,16 +13,21 @@ from typing import Dict, Set, List, Optional, Tuple
 import requests
 import cloudscraper
 from bs4 import BeautifulSoup
-from hashtags_llm import llm_hashtags
-from dedupe import is_near_duplicate
-import store
+try:
+    from .hashtags_llm import llm_hashtags
+    from .dedupe import is_near_duplicate
+    from . import store
+except Exception:
+    from hashtags_llm import llm_hashtags
+    from dedupe import is_near_duplicate
+    import store
 
 TOPIC_BRAND_RE = re.compile(r"\b(?:ap|apnews|associated\s+press)\b", re.I)
 LIVE_RE = re.compile(r"\blive:?\b", re.I)
 
 
 def topic_only_hashtags(topic: str) -> list[str]:
-    from bs4 import BeautifulSoup
+
 
     clean = BeautifulSoup(topic or "", "html.parser").get_text(" ", strip=True)
     clean = LIVE_RE.sub("", clean)
@@ -56,6 +61,8 @@ TIMEZONE = os.environ.get("TIMEZONE", "Europe/Paris")
 TELEGRAM_PARSE_MODE = os.environ.get("TELEGRAM_PARSE_MODE", "")  # "" (plain) | "MarkdownV2" | "HTML"
 DISABLE_WEB_PAGE_PREVIEW = os.environ.get("DISABLE_WEB_PAGE_PREVIEW", "true").lower() == "true"
 DISABLE_NOTIFICATION = os.environ.get("DISABLE_NOTIFICATION", "false").lower() == "true"
+NEAR_DUP_THRESHOLD = float(os.environ.get("NEAR_DUP_THRESHOLD", "92"))
+COMPARE_LAST_N = int(os.environ.get("COMPARE_LAST_N", "5"))
 
 # Debug and test modes
 DRY_RUN = os.environ.get("DRY_RUN", "false").lower() == "true"
@@ -64,10 +71,7 @@ APP_ENV = os.environ.get("APP_ENV", "staging")
 
 HOMEPAGE_URL = "https://apnews.com"
 
-if not BOT_TOKEN or not CHANNEL_ID:
-    # Do not hard-exit in SELF_TEST
-    if not SELF_TEST:
-        raise SystemExit("Missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHANNEL_ID env vars")
+
 
 # ---------- Logging setup ----------
 logging.basicConfig(
@@ -832,6 +836,14 @@ def main() -> None:
         send_telegram_message("🔔 AP News Live Bot started")
     except Exception as e:
         logging.warning(f"Startup notification failed: {e}")
+    
+    # After startup notify try/except, still inside main()
+
+if not BOT_TOKEN or not CHANNEL_ID:
+    # In self-test or dry-run, don't hard-exit; otherwise fail fast.
+    if not (SELF_TEST or DRY_RUN):
+        logging.error("Missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHANNEL_ID env vars")
+        raise SystemExit("Missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHANNEL_ID env vars")
 
     current_interval = CHECK_INTERVAL
     last_topics_seen_at = time.time()
@@ -874,8 +886,8 @@ def main() -> None:
                     if not tags:
                         tags = topic_only_hashtags(topic_name)  # single tag fallback
 
-                    recent = store.get_recent(5)
-                    if is_near_duplicate(msg, recent, threshold=92):
+                    recent = store.get_recent(COMPARE_LAST_N)
+                    if is_near_duplicate(msg, recent, threshold=int(NEAR_DUP_THRESHOLD)):
                         store.release_lock(story_key)
                         continue
 

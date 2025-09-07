@@ -1,9 +1,6 @@
-import os
+"""apnewslivebot package initializer.
 
-# Provide safe defaults so importing the package doesn't require secrets
-os.environ.setdefault("TELEGRAM_BOT_TOKEN", "test")
-os.environ.setdefault("TELEGRAM_CHANNEL_ID", "test")
-
-from .apnewslivebot import *
-
-__all__ = [name for name in globals() if not name.startswith("_")]
+Intentionally minimal to avoid side effects on import. All runtime behavior
+lives in apnewslivebot.apnewslivebot:main().
+"""
+__all__ = []

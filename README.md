@@ -24,7 +24,8 @@ pip install -r requirements.txt
 After setting the required environment variables, run:
 
 ```bash
-python apnewslivebot.py
+python -m apnewslivebot.apnewslivebot
+On Render, set the Start Command to `python -m apnewslivebot.apnewslivebot`.
 ```
 
 The script will keep running and posting updates to the Telegram channel.
