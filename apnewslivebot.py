@@ -12,8 +12,25 @@ from typing import Dict, Set, List, Optional, Tuple
 import requests
 import cloudscraper
 from bs4 import BeautifulSoup
-from hashtags import generate_hashtags as det_hashtags
+from hashtags_llm import llm_hashtags
 from store import KEY_PREFIX, k, redis as redis_client
+
+TOPIC_BRAND_RE = re.compile(r"\b(?:ap|apnews|associated\s+press)\b", re.I)
+LIVE_RE = re.compile(r"\blive:?\b", re.I)
+
+
+def topic_only_hashtags(topic: str) -> list[str]:
+    from bs4 import BeautifulSoup
+
+    clean = BeautifulSoup(topic or "", "html.parser").get_text(" ", strip=True)
+    clean = LIVE_RE.sub("", clean)
+    clean = TOPIC_BRAND_RE.sub("", clean)
+    clean = re.sub(r"[^A-Za-z0-9 ]+", " ", clean)
+    clean = re.sub(r"\s+", " ", clean).strip()
+    if not clean:
+        return []
+    token = "".join(w[:1].upper() + w[1:] for w in clean.split())[:40]
+    return [f"#{token}"]
 
 
 # ---------- HTTP scraper (Cloudflare-aware) ----------
@@ -840,10 +857,11 @@ def main() -> None:
                         continue
                     msg = format_message(topic_name, title, link, ts_iso)
                     try:
-                        tags = det_hashtags(title, f"{topic_name}\n{link}", story_id=pid, max_tags=6)
-                    except Exception as e:
-                        logging.warning(f"Deterministic hashtag generation failed: {e}")
+                        tags = llm_hashtags(title, topic_name, ts_iso, link)
+                    except Exception:
                         tags = []
+                    if not tags:
+                        tags = topic_only_hashtags(topic_name)  # single tag fallback
                     if tags:
                         msg = f"{msg}\n\n{' '.join(tags)}"
                     send_telegram_message(msg)

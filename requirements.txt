@@ -6,3 +6,4 @@ cloudscraper==1.2.71
 pytest==8.2.1
 
 rapidfuzz==3.9.3
+openai>=1.0.0

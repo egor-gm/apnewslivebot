@@ -28,6 +28,7 @@ def test_main_skips_duplicate_links(monkeypatch):
     monkeypatch.setattr(apnewslivebot, "send_telegram_message", mock_send)
     monkeypatch.setattr(apnewslivebot.time, "sleep", stop_sleep)
     monkeypatch.setattr(apnewslivebot, "save_sent", lambda: None)
+    monkeypatch.setattr(apnewslivebot, "llm_hashtags", lambda *a, **k: [])
 
     apnewslivebot.sent_links.clear()
     apnewslivebot.sent_post_ids.clear()
