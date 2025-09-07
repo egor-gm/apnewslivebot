@@ -836,14 +836,14 @@ def main() -> None:
         send_telegram_message("🔔 AP News Live Bot started")
     except Exception as e:
         logging.warning(f"Startup notification failed: {e}")
-    
+
     # After startup notify try/except, still inside main()
 
-if not BOT_TOKEN or not CHANNEL_ID:
-    # In self-test or dry-run, don't hard-exit; otherwise fail fast.
-    if not (SELF_TEST or DRY_RUN):
-        logging.error("Missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHANNEL_ID env vars")
-        raise SystemExit("Missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHANNEL_ID env vars")
+    if not BOT_TOKEN or not CHANNEL_ID:
+        # In self-test or dry-run, don't hard-exit; otherwise fail fast.
+        if not (SELF_TEST or DRY_RUN):
+            logging.error("Missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHANNEL_ID env vars")
+            raise SystemExit("Missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHANNEL_ID env vars")
 
     current_interval = CHECK_INTERVAL
     last_topics_seen_at = time.time()
