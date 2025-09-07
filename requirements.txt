@@ -4,3 +4,5 @@ beautifulsoup4==4.12.3
 upstash-redis==1.4.0
 cloudscraper==1.2.71
 pytest==8.2.1
+
+rapidfuzz==3.9.3
