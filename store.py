@@ -63,7 +63,7 @@ def stage_pending(story_key: str, body: str, hashtags: List[str]) -> None:
     try:
         redis.hset(
             k(f"post:{story_key}"),
-            {"body": body, "hashtags": json.dumps(hashtags)},
+            values={"body": body, "hashtags": json.dumps(hashtags)},
         )
         redis.lpush(k("recent_bodies"), body)
         redis.ltrim(k("recent_bodies"), 0, 4)
