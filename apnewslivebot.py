@@ -13,6 +13,7 @@ import requests
 import cloudscraper
 from bs4 import BeautifulSoup
 from upstash_redis import Redis
+from hashtags import generate_hashtags as det_hashtags
 
 
 # ---------- HTTP scraper (Cloudflare-aware) ----------
@@ -40,6 +41,12 @@ DISABLE_NOTIFICATION = os.environ.get("DISABLE_NOTIFICATION", "false").lower() =
 # Debug and test modes
 DRY_RUN = os.environ.get("DRY_RUN", "false").lower() == "true"
 SELF_TEST = os.environ.get("SELF_TEST", "false").lower() == "true"
+APP_ENV = os.environ.get("APP_ENV", "staging")
+KEY_PREFIX = os.environ.get("KEY_PREFIX", "stg")
+
+def k(suffix: str) -> str:
+    # All Redis keys get namespaced so staging/prod don’t collide in a single DB
+    return f"{KEY_PREFIX}:{suffix}"
 
 HOMEPAGE_URL = "https://apnews.com"
 
@@ -61,7 +68,7 @@ redis_client: Optional[Redis] = None
 if REDIS_URL and REDIS_TOKEN:
     try:
         redis_client = Redis(url=REDIS_URL, token=REDIS_TOKEN)
-        logging.info("Using Upstash Redis for state storage")
+        logging.info(f"Using Upstash Redis for state storage (env={APP_ENV}, prefix={KEY_PREFIX})")
     except Exception as e:
         logging.warning(f"Redis init failed: {e}")
         redis_client = None
@@ -77,8 +84,8 @@ def load_sent() -> None:
     global sent_links, sent_post_ids
     if redis_client:
         try:
-            sent_links = set(redis_client.smembers("sent_links") or [])
-            sent_post_ids = set(redis_client.smembers("sent_post_ids") or [])
+            sent_links = set(redis_client.smembers(k("sent_links")) or [])
+            sent_post_ids = set(redis_client.smembers(k("sent_post_ids")) or [])
             logging.info(
                 f"Loaded {len(sent_links)} links and {len(sent_post_ids)} post_ids from Redis"
             )
@@ -111,9 +118,9 @@ def save_sent() -> None:
                 redis_client.delete("sent_links")
                 redis_client.delete("sent_post_ids")
                 if sent_links:
-                    redis_client.sadd("sent_links", *sent_links)
+                    redis_client.sadd(k("sent_links"), *sent_links)
                 if sent_post_ids:
-                    redis_client.sadd("sent_post_ids", *sent_post_ids)
+                    redis_client.sadd(k("sent_post_ids"), *sent_post_ids)
             except Exception as e:
                 logging.warning(f"Could not save to Redis: {e}")
         with open(SENT_FILE, "w", encoding="utf-8") as f:
@@ -797,6 +804,7 @@ def main() -> None:
     load_sent()
     _install_signal_handlers()
     logging.info("Bot started")
+    logging.info(f"Environment: {APP_ENV} | KEY_PREFIX={KEY_PREFIX} | DRY_RUN={'true' if DRY_RUN else 'false'}")
 
     if SELF_TEST:
         # DRY_RUN is recommended for self test
@@ -842,6 +850,13 @@ def main() -> None:
                     if pid in sent_post_ids:
                         continue
                     msg = format_message(topic_name, title, link, ts_iso)
+                    try:
+                        tags = det_hashtags(title, f"{topic_name}\n{link}", story_id=pid, max_tags=6)
+                    except Exception as e:
+                        logging.warning(f"Deterministic hashtag generation failed: {e}")
+                        tags = []
+                    if tags:
+                        msg = f"{msg}\n\n{' '.join(tags)}"
                     send_telegram_message(msg)
                     sent_post_ids.add(pid)
                     sent_links.add(link)

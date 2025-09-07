@@ -1,0 +1,44 @@
+canonical:
+  - APNews
+  - Breaking
+  - US
+  - Europe
+  - MiddleEast
+  - Asia
+  - Economy
+  - Markets
+  - Tech
+  - Cybersecurity
+  - AI
+  - Sports
+  - Entertainment
+  - Health
+  - Science
+  - Climate
+  - Wildfire
+  - Earthquake
+  - Election2024
+
+synonyms:
+  united states: US
+  u.s.: US
+  usa: US
+  american: US
+  eu: Europe
+  european union: Europe
+  middle east: MiddleEast
+  ai: AI
+  artificial intelligence: AI
+  stock market: Markets
+  equities: Markets
+  infosec: Cybersecurity
+
+blocked:
+  - click
+  - photo
+  - video
+  - live
+  - update
+
+always:
+  - APNews
