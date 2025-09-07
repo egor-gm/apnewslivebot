@@ -23,6 +23,14 @@ except Exception:
     from dedupe import is_near_duplicate
     import store
 
+LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
+import logging, os
+logging.basicConfig(
+    level=getattr(logging, LOG_LEVEL, logging.INFO),
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    force=True,  # override any prior config
+)
+
 TOPIC_BRAND_RE = re.compile(r"\b(?:ap|apnews|associated\s+press)\b", re.I)
 LIVE_RE = re.compile(r"\blive:?\b", re.I)
 
@@ -825,7 +833,7 @@ def main() -> None:
     _install_signal_handlers()
     logging.info("Bot started")
     logging.info(
-        f"Environment: {APP_ENV} | KEY_PREFIX={store.KEY_PREFIX} | DRY_RUN={'true' if DRY_RUN else 'false'}"
+        f"Environment: {APP_ENV} | KEY_PREFIX={store.KEY_PREFIX} | DRY_RUN={'true' if DRY_RUN else 'false'}" 
     )
 
     if SELF_TEST:
