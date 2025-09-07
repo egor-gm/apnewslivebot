@@ -5,6 +5,7 @@ import logging
 import re
 import signal
 import unicodedata
+import hashlib
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 from typing import Dict, Set, List, Optional, Tuple
@@ -13,7 +14,8 @@ import requests
 import cloudscraper
 from bs4 import BeautifulSoup
 from hashtags_llm import llm_hashtags
-from store import KEY_PREFIX, k, redis as redis_client
+from dedupe import is_near_duplicate
+import store
 
 TOPIC_BRAND_RE = re.compile(r"\b(?:ap|apnews|associated\s+press)\b", re.I)
 LIVE_RE = re.compile(r"\blive:?\b", re.I)
@@ -74,7 +76,7 @@ logging.basicConfig(
 )
 
 # ---------- Optional Upstash Redis ----------
-# redis_client is provided by the store module
+# store.redis provides the Redis client if configured
 
 # ---------- Persistence (sent IDs and links) ----------
 SENT_FILE = "sent.json"
@@ -85,10 +87,10 @@ sent_post_ids: Set[str] = set()  # track LiveBlogPost IDs that were sent
 def load_sent() -> None:
     """Load sent IDs and links from Redis or local file."""
     global sent_links, sent_post_ids
-    if redis_client:
+    if store.redis:
         try:
-            sent_links = set(redis_client.smembers(k("sent_links")) or [])
-            sent_post_ids = set(redis_client.smembers(k("sent_post_ids")) or [])
+            sent_links = set(store.redis.smembers(store.k("sent_links")) or [])
+            sent_post_ids = set(store.redis.smembers(store.k("sent_post_ids")) or [])
             logging.info(
                 f"Loaded {len(sent_links)} links and {len(sent_post_ids)} post_ids from Redis"
             )
@@ -115,15 +117,15 @@ def load_sent() -> None:
 def save_sent() -> None:
     """Persist sent IDs and links to Redis and local file."""
     try:
-        if redis_client:
+        if store.redis:
             try:
                 # Use two calls for broader compatibility
-                redis_client.delete("sent_links")
-                redis_client.delete("sent_post_ids")
+                store.redis.delete(store.k("sent_links"))
+                store.redis.delete(store.k("sent_post_ids"))
                 if sent_links:
-                    redis_client.sadd(k("sent_links"), *sent_links)
+                    store.redis.sadd(store.k("sent_links"), *sent_links)
                 if sent_post_ids:
-                    redis_client.sadd(k("sent_post_ids"), *sent_post_ids)
+                    store.redis.sadd(store.k("sent_post_ids"), *sent_post_ids)
             except Exception as e:
                 logging.warning(f"Could not save to Redis: {e}")
         with open(SENT_FILE, "w", encoding="utf-8") as f:
@@ -545,8 +547,14 @@ def parse_live_page(topic_name: str, url: str, html: Optional[str] = None) -> Li
             ts_iso=ts_iso,
         )
 
-        if pid and pid not in sent_post_ids:
-            new_items.append((str(pid), title, permalink, ts_iso))
+        key_src = permalink or post_url or str(pid)
+        if permalink and "#" in permalink:
+            story_key = permalink.rsplit("#", 1)[-1]
+        else:
+            story_key = hashlib.sha1((key_src or "").encode("utf-8")).hexdigest()
+
+        if story_key and story_key not in sent_post_ids:
+            new_items.append((story_key, title, permalink, ts_iso))
 
     # Sort oldest -> newest by timestamp
     new_items.sort(key=lambda t: t[3] or "")
@@ -810,7 +818,9 @@ def main() -> None:
     load_sent()
     _install_signal_handlers()
     logging.info("Bot started")
-    logging.info(f"Environment: {APP_ENV} | KEY_PREFIX={KEY_PREFIX} | DRY_RUN={'true' if DRY_RUN else 'false'}")
+    logging.info(
+        f"Environment: {APP_ENV} | KEY_PREFIX={store.KEY_PREFIX} | DRY_RUN={'true' if DRY_RUN else 'false'}"
+    )
 
     if SELF_TEST:
         # DRY_RUN is recommended for self test
@@ -852,9 +862,10 @@ def main() -> None:
                 logging.info(f"Checking {topic_name} -> {topic_url}")
                 new_posts = parse_live_page(topic_name, topic_url)
 
-                for pid, title, link, ts_iso in new_posts:
-                    if pid in sent_post_ids:
+                for story_key, title, link, ts_iso in new_posts:
+                    if not store.acquire_lock(story_key):
                         continue
+
                     msg = format_message(topic_name, title, link, ts_iso)
                     try:
                         tags = llm_hashtags(title, topic_name, ts_iso, link)
@@ -862,12 +873,20 @@ def main() -> None:
                         tags = []
                     if not tags:
                         tags = topic_only_hashtags(topic_name)  # single tag fallback
-                    if tags:
-                        msg = f"{msg}\n\n{' '.join(tags)}"
-                    send_telegram_message(msg)
-                    sent_post_ids.add(pid)
+
+                    recent = store.get_recent(5)
+                    if is_near_duplicate(msg, recent, threshold=92):
+                        store.release_lock(story_key)
+                        continue
+
+                    store.stage_pending(story_key, msg, tags)
+                    full_msg = f"{msg}\n\n{' '.join(tags)}" if tags else msg
+                    send_telegram_message(full_msg)
+                    sent_post_ids.add(story_key)
                     sent_links.add(link)
                     save_sent()
+                    store.finalize_sent(story_key, msg)
+                    store.release_lock(story_key)
                     logging.info(f"Sent: {title}")
 
         except Exception as e:
