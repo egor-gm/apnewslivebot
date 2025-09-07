@@ -13,8 +13,8 @@ def test_punctuation_only_edit_blocked():
     assert is_near_duplicate(candidate, recent)
 
 
-def test_genuinely_new_post_passes():
+def test_substantive_update_passes():
     recent = ["Breaking news about economy"]
-    candidate = "Weather updates for the weekend"
+    candidate = "Breaking news: economy improves drastically"
     assert canonize(candidate) != canonize(recent[0])
     assert not is_near_duplicate(candidate, recent)

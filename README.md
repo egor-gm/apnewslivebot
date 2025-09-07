@@ -29,6 +29,23 @@ python apnewslivebot.py
 
 The script will keep running and posting updates to the Telegram channel.
 
+## Hashtags and fallback
+
+The bot asks an LLM to generate multiple hashtags. If the model is unavailable,
+it deterministically falls back to a single hashtag derived from the topic name
+via `topic_only_hashtags`. This predictable fallback avoids the YAML mapping and
+guarantees that an outage still yields a consistent tag.
+
+## Deployment and Redis
+
+Both staging and production share one Upstash Redis instance. Set `KEY_PREFIX`
+to `stg` or `prod` (and match `APP_ENV`) so each environment namespaces its
+keys. On Render, use branch mapping so the production service builds from
+`main` while a staging service tracks another branch. To cut over, deploy the
+desired commit to `main` and restart with `KEY_PREFIX=prod`. To roll back,
+redeploy the previous branch/commit with `KEY_PREFIX=stg` and restart the
+service.
+
 ## Running tests
 
 Install the requirements as above and execute:
