@@ -12,8 +12,8 @@ from typing import Dict, Set, List, Optional, Tuple
 import requests
 import cloudscraper
 from bs4 import BeautifulSoup
-from upstash_redis import Redis
 from hashtags import generate_hashtags as det_hashtags
+from store import KEY_PREFIX, k, redis as redis_client
 
 
 # ---------- HTTP scraper (Cloudflare-aware) ----------
@@ -42,11 +42,6 @@ DISABLE_NOTIFICATION = os.environ.get("DISABLE_NOTIFICATION", "false").lower() =
 DRY_RUN = os.environ.get("DRY_RUN", "false").lower() == "true"
 SELF_TEST = os.environ.get("SELF_TEST", "false").lower() == "true"
 APP_ENV = os.environ.get("APP_ENV", "staging")
-KEY_PREFIX = os.environ.get("KEY_PREFIX", "stg")
-
-def k(suffix: str) -> str:
-    # All Redis keys get namespaced so staging/prod don’t collide in a single DB
-    return f"{KEY_PREFIX}:{suffix}"
 
 HOMEPAGE_URL = "https://apnews.com"
 
@@ -62,16 +57,7 @@ logging.basicConfig(
 )
 
 # ---------- Optional Upstash Redis ----------
-REDIS_URL = os.environ.get("UPSTASH_REDIS_REST_URL")
-REDIS_TOKEN = os.environ.get("UPSTASH_REDIS_REST_TOKEN")
-redis_client: Optional[Redis] = None
-if REDIS_URL and REDIS_TOKEN:
-    try:
-        redis_client = Redis(url=REDIS_URL, token=REDIS_TOKEN)
-        logging.info(f"Using Upstash Redis for state storage (env={APP_ENV}, prefix={KEY_PREFIX})")
-    except Exception as e:
-        logging.warning(f"Redis init failed: {e}")
-        redis_client = None
+# redis_client is provided by the store module
 
 # ---------- Persistence (sent IDs and links) ----------
 SENT_FILE = "sent.json"
@@ -362,6 +348,9 @@ def resolve_post_permalink(soup: BeautifulSoup,
             return f"{live_url}{pu}"
         if "#" in pu:
             return normalize_url(pu)
+        if pu.startswith("/") and post_id:
+            # Relative URLs fallback to the live page with the post id
+            return f"{live_url}#{post_id}"
 
     # 1) use explicit copy-link mapping if available
     if post_id:
