@@ -1,4 +1,5 @@
 import os
+PREFIX = os.getenv("KEY_PREFIX","dev")
 import time
 import json
 import logging
@@ -77,8 +78,8 @@ def load_sent() -> None:
     global sent_links, sent_post_ids
     if redis_client:
         try:
-            sent_links = set(redis_client.smembers("sent_links") or [])
-            sent_post_ids = set(redis_client.smembers("sent_post_ids") or [])
+            sent_links = set(redis_client.smembers(f"{PREFIX}:sent_links") or [])
+            sent_post_ids = set(redis_client.smembers(f"{PREFIX}:sent_post_ids") or [])
             logging.info(
                 f"Loaded {len(sent_links)} links and {len(sent_post_ids)} post_ids from Redis"
             )
@@ -108,12 +109,12 @@ def save_sent() -> None:
         if redis_client:
             try:
                 # Use two calls for broader compatibility
-                redis_client.delete("sent_links")
-                redis_client.delete("sent_post_ids")
+                redis_client.delete(f"{PREFIX}:sent_links")
+                redis_client.delete(f"{PREFIX}:sent_post_ids")
                 if sent_links:
-                    redis_client.sadd("sent_links", *sent_links)
+                    redis_client.sadd(f"{PREFIX}:sent_links", *sent_links)
                 if sent_post_ids:
-                    redis_client.sadd("sent_post_ids", *sent_post_ids)
+                    redis_client.sadd(f"{PREFIX}:sent_post_ids", *sent_post_ids)
             except Exception as e:
                 logging.warning(f"Could not save to Redis: {e}")
         with open(SENT_FILE, "w", encoding="utf-8") as f:
