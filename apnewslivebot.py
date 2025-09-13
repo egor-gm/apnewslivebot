@@ -70,7 +70,7 @@ TIMEZONE = os.environ.get("TIMEZONE", "Europe/Paris")
 TELEGRAM_PARSE_MODE = os.environ.get("TELEGRAM_PARSE_MODE", "")  # "" (plain) | "MarkdownV2" | "HTML"
 DISABLE_WEB_PAGE_PREVIEW = os.environ.get("DISABLE_WEB_PAGE_PREVIEW", "true").lower() == "true"
 DISABLE_NOTIFICATION = os.environ.get("DISABLE_NOTIFICATION", "false").lower() == "true"
-NEAR_DUP_THRESHOLD = float(os.environ.get("NEAR_DUP_THRESHOLD", "92"))
+NEAR_DUP_THRESHOLD = float(os.environ.get("NEAR_DUP_THRESHOLD", "90"))
 COMPARE_LAST_N = int(os.environ.get("COMPARE_LAST_N", "5"))
 
 # Debug and test modes
