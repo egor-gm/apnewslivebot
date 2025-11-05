@@ -5,9 +5,11 @@ import logging
 import re
 import signal
 import unicodedata
+from collections import deque
 from datetime import datetime, timezone
+from difflib import SequenceMatcher
 from zoneinfo import ZoneInfo
-from typing import Dict, Set, List, Optional, Tuple
+from typing import Deque, Dict, Set, List, Optional, Tuple
 
 import requests
 import cloudscraper
@@ -65,6 +67,32 @@ if REDIS_URL and REDIS_TOKEN:
     except Exception as e:
         logging.warning(f"Redis init failed: {e}")
         redis_client = None
+
+# ---------- Deduplication settings ----------
+try:
+    SIMILARITY_THRESHOLD = float(
+        os.environ.get("DEDUP_SIMILARITY_THRESHOLD", "0.8")
+    )
+except ValueError:
+    logging.warning(
+        "Invalid DEDUP_SIMILARITY_THRESHOLD env value; defaulting to 0.8"
+    )
+    SIMILARITY_THRESHOLD = 0.8
+SIMILARITY_THRESHOLD = min(max(SIMILARITY_THRESHOLD, 0.0), 1.0)
+
+try:
+    RECENT_POST_HISTORY_LIMIT = int(
+        os.environ.get("RECENT_POST_HISTORY_LIMIT", "30")
+    )
+    if RECENT_POST_HISTORY_LIMIT <= 0:
+        raise ValueError
+except ValueError:
+    logging.warning(
+        "Invalid RECENT_POST_HISTORY_LIMIT env value; defaulting to 30"
+    )
+    RECENT_POST_HISTORY_LIMIT = 30
+
+recent_posts: Deque[Tuple[str, str]] = deque(maxlen=RECENT_POST_HISTORY_LIMIT)
 
 # ---------- Persistence (sent IDs and links) ----------
 SENT_FILE = "sent.json"
@@ -211,6 +239,32 @@ def _norm_text(s: str) -> str:
     s = s.replace("\u2019", "'")  # curly apostrophe to straight
     s = re.sub(r"\s+", " ", s).strip().lower()
     return s
+
+
+def is_similar_to_recent(title: str, threshold: float = SIMILARITY_THRESHOLD) -> bool:
+    """Return True if title is similar to one of the recent titles."""
+    if threshold <= 0:
+        return False
+    normalized = _norm_text(title)
+    if not normalized:
+        return False
+    for prev_norm, prev_original in recent_posts:
+        similarity = SequenceMatcher(None, normalized, prev_norm).ratio()
+        if similarity >= threshold:
+            logging.info(
+                "Skipping '%s' due to %.1f%% similarity with recent post '%s'",
+                title,
+                similarity * 100,
+                prev_original,
+            )
+            return True
+    return False
+
+
+def remember_recent_post(title: str) -> None:
+    normalized = _norm_text(title)
+    if normalized:
+        recent_posts.append((normalized, title))
 
 
 def _build_article_index(soup: BeautifulSoup) -> Dict[str, str]:
@@ -745,10 +799,15 @@ def main() -> None:
                 for pid, title, link, ts_iso in new_posts:
                     if pid in sent_post_ids:
                         continue
+                    if is_similar_to_recent(title):
+                        sent_post_ids.add(pid)
+                        save_sent()
+                        continue
                     msg = format_message(topic_name, title, link, ts_iso)
                     send_telegram_message(msg)
                     sent_post_ids.add(pid)
                     sent_links.add(link)
+                    remember_recent_post(title)
                     save_sent()
                     logging.info(f"Sent: {title}")
 
