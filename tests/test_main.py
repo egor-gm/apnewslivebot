@@ -31,6 +31,7 @@ def test_main_skips_duplicate_links(monkeypatch):
 
     apnewslivebot.sent_links.clear()
     apnewslivebot.sent_post_ids.clear()
+    apnewslivebot.recent_titles_by_topic.clear()
 
     try:
         apnewslivebot.main()
@@ -41,3 +42,20 @@ def test_main_skips_duplicate_links(monkeypatch):
     assert len(messages) == 3
     article_messages = [m for m in messages if "https://example.com/shared" in m]
     assert len(article_messages) == 2
+
+
+def test_check_recent_post_similarity_threshold():
+    apnewslivebot.recent_titles_by_topic.clear()
+    apnewslivebot.remember_recent_post("Topic", "Breaking fire in downtown market")
+
+    is_similar, ratio = apnewslivebot.check_recent_post_similarity(
+        "Topic", "Breaking fire at the downtown market"
+    )
+    assert is_similar
+    assert ratio >= apnewslivebot.DEDUP_SIMILARITY_THRESHOLD
+
+    is_similar2, ratio2 = apnewslivebot.check_recent_post_similarity(
+        "Topic", "Completely different headline"
+    )
+    assert not is_similar2
+    assert ratio2 < apnewslivebot.DEDUP_SIMILARITY_THRESHOLD
