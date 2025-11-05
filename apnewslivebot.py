@@ -6,9 +6,11 @@ import logging
 import re
 import signal
 import unicodedata
+from collections import deque
 from datetime import datetime, timezone
+from difflib import SequenceMatcher
 from zoneinfo import ZoneInfo
-from typing import Dict, Set, List, Optional, Tuple
+from typing import Deque, Dict, Set, List, Optional, Tuple
 
 import requests
 import cloudscraper
@@ -37,6 +39,10 @@ TIMEZONE = os.environ.get("TIMEZONE", "Europe/Paris")
 TELEGRAM_PARSE_MODE = os.environ.get("TELEGRAM_PARSE_MODE", "")  # "" (plain) | "MarkdownV2" | "HTML"
 DISABLE_WEB_PAGE_PREVIEW = os.environ.get("DISABLE_WEB_PAGE_PREVIEW", "true").lower() == "true"
 DISABLE_NOTIFICATION = os.environ.get("DISABLE_NOTIFICATION", "false").lower() == "true"
+
+# Dedupe configuration (string similarity only, no LLM usage)
+DEDUP_SIMILARITY_THRESHOLD = float(os.environ.get("DEDUP_SIMILARITY_THRESHOLD", "0.8"))
+DEDUP_RECENT_PER_TOPIC = int(os.environ.get("DEDUP_RECENT_PER_TOPIC", "20"))
 
 # Debug and test modes
 DRY_RUN = os.environ.get("DRY_RUN", "false").lower() == "true"
@@ -71,6 +77,7 @@ if REDIS_URL and REDIS_TOKEN:
 SENT_FILE = "sent.json"
 sent_links: Set[str] = set()
 sent_post_ids: Set[str] = set()  # track LiveBlogPost IDs that were sent
+recent_titles_by_topic: Dict[str, Deque[str]] = {}
 
 
 def load_sent() -> None:
@@ -213,6 +220,41 @@ def _norm_text(s: str) -> str:
     s = s.replace("\u2019", "'")  # curly apostrophe to straight
     s = re.sub(r"\s+", " ", s).strip().lower()
     return s
+
+
+def _get_recent_titles(topic: str) -> Deque[str]:
+    dq = recent_titles_by_topic.get(topic)
+    if dq is None:
+        dq = deque(maxlen=DEDUP_RECENT_PER_TOPIC if DEDUP_RECENT_PER_TOPIC > 0 else None)
+        recent_titles_by_topic[topic] = dq
+    return dq
+
+
+def remember_recent_post(topic: str, title: str) -> None:
+    """Store the normalized title for future similarity checks."""
+    normalized = _norm_text(title)
+    if not normalized:
+        return
+    dq = _get_recent_titles(topic)
+    dq.append(normalized)
+
+
+def check_recent_post_similarity(topic: str, title: str) -> Tuple[bool, float]:
+    """Check if the title is similar to a recently sent post for the topic.
+
+    Uses a simple SequenceMatcher ratio (0..1). Returns a tuple of
+    (is_similar, similarity_score).
+    """
+    normalized = _norm_text(title)
+    if not normalized:
+        return False, 0.0
+
+    dq = _get_recent_titles(topic)
+    for previous in dq:
+        ratio = SequenceMatcher(None, normalized, previous).ratio()
+        if ratio >= DEDUP_SIMILARITY_THRESHOLD:
+            return True, ratio
+    return False, 0.0
 
 
 # --- AP live blog helpers ---
@@ -377,8 +419,19 @@ def resolve_post_permalink(soup: BeautifulSoup,
     if aid:
         return f"{live_url}#{aid}"
 
-    # 4) fallback: live page without fragment
-    logging.warning("Falling back to live_url without fragment; no anchor could be resolved for title '%s'", title)
+    # 4) fallback: use post_id fragment if available before bare URL
+    if post_id:
+        frag = str(post_id).split("#")[-1]
+        if frag:
+            logging.warning(
+                "Falling back to post id fragment for title '%s' -> #%s", title, frag
+            )
+            return f"{live_url}#{frag}"
+
+    logging.warning(
+        "Falling back to live_url without fragment; no anchor could be resolved for title '%s'",
+        title,
+    )
     return live_url
 
 
@@ -842,10 +895,21 @@ def main() -> None:
                 for pid, title, link, ts_iso in new_posts:
                     if pid in sent_post_ids:
                         continue
+                    is_similar, similarity = check_recent_post_similarity(topic_name, title)
+                    if is_similar:
+                        logging.info(
+                            "Skipping '%s' for topic %s (similarity %.1f%% >= %.1f%%)",
+                            title,
+                            topic_name,
+                            similarity * 100,
+                            DEDUP_SIMILARITY_THRESHOLD * 100,
+                        )
+                        continue
                     msg = format_message(topic_name, title, link, ts_iso)
                     send_telegram_message(msg)
                     sent_post_ids.add(pid)
                     sent_links.add(link)
+                    remember_recent_post(topic_name, title)
                     save_sent()
                     logging.info(f"Sent: {title}")
 
