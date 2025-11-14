@@ -33,7 +33,7 @@ LONG_INTERVAL = int(os.environ.get("LONG_CHECK_INTERVAL_SECONDS", "300"))  # 5 m
 NO_TOPICS_THRESHOLD_SECONDS = int(os.environ.get("NO_TOPICS_THRESHOLD_SECONDS", "3600"))  # 1 hour
 
 # Timezone for message timestamps
-TIMEZONE = os.environ.get("TIMEZONE", "Europe/Paris")
+TIMEZONE = os.environ.get("TIMEZONE", "America/New_York")
 
 # Telegram send options
 TELEGRAM_PARSE_MODE = os.environ.get("TELEGRAM_PARSE_MODE", "")  # "" (plain) | "MarkdownV2" | "HTML"
@@ -435,10 +435,10 @@ def resolve_post_permalink(soup: BeautifulSoup,
     return live_url
 
 
-def parse_live_page(topic_name: str, url: str, html: Optional[str] = None) -> List[Tuple[str, str, str, str]]:
+def parse_live_page(topic_name: str, url: str, html: Optional[str] = None) -> List[Tuple[str, str, str, str, Optional[str]]]:
     """Scrape via the JSON-LD <script type="application/ld+json"> of type LiveBlogPosting.
 
-    It extracts a list of tuples: (post_id, title, permalink, ts_iso).
+    It extracts a list of tuples: (post_id, title, permalink, ts_iso, media_url).
     If html is provided, parse it instead of fetching from the url.
     """
     if html is None:
@@ -564,7 +564,7 @@ def parse_live_page(topic_name: str, url: str, html: Optional[str] = None) -> Li
         )
         return []
 
-    new_items: List[Tuple[str, str, str, str]] = []
+    new_items: List[Tuple[str, str, str, str, Optional[str]]] = []
     for post in posts:
         pid = (
             post.get("@id")
@@ -574,6 +574,29 @@ def parse_live_page(topic_name: str, url: str, html: Optional[str] = None) -> Li
         title = post.get("headline", "").strip() or post.get("name", "").strip()
         ts_iso = post.get("datePublished") or post.get("dateModified") or datetime.now(timezone.utc).isoformat()
         post_url = post.get("url") or post.get("mainEntityOfPage")
+
+        # Extract media URL (image or video)
+        media_url = None
+        # Try to get image from various JSON-LD properties
+        if "image" in post:
+            img = post["image"]
+            if isinstance(img, str):
+                media_url = img
+            elif isinstance(img, dict):
+                media_url = img.get("url") or img.get("contentUrl")
+            elif isinstance(img, list) and img:
+                first_img = img[0]
+                if isinstance(first_img, str):
+                    media_url = first_img
+                elif isinstance(first_img, dict):
+                    media_url = first_img.get("url") or first_img.get("contentUrl")
+        # Try video if no image found
+        if not media_url and "video" in post:
+            vid = post["video"]
+            if isinstance(vid, str):
+                media_url = vid
+            elif isinstance(vid, dict):
+                media_url = vid.get("url") or vid.get("contentUrl")
 
         # Resolve the most accurate permalink with a correct fragment
         permalink = resolve_post_permalink(
@@ -587,7 +610,7 @@ def parse_live_page(topic_name: str, url: str, html: Optional[str] = None) -> Li
         )
 
         if pid and pid not in sent_post_ids:
-            new_items.append((str(pid), title, permalink, ts_iso))
+            new_items.append((str(pid), title, permalink, ts_iso, media_url))
 
     # Sort oldest -> newest by timestamp
     new_items.sort(key=lambda t: t[3] or "")
@@ -611,21 +634,34 @@ def _telegram_api_send(text: str, parse_mode: str = "") -> requests.Response:
     return requests.post(api_url, data=params, timeout=15)
 
 
-def send_telegram_message(text: str) -> None:
-    """Send message to Telegram with a safe fallback.
+def send_telegram_message(text: str, media_url: Optional[str] = None) -> None:
+    """Send message to Telegram with optional media and safe fallback.
 
     To avoid 400 parse errors, default to plain text unless TELEGRAM_PARSE_MODE is set.
     If a 400 occurs with a parse mode, retry once without parse mode.
+    If media_url is provided, attempts to send as photo or video.
     """
     # Truncate if necessary to avoid hitting Telegram 4096 char limit
     if len(text) > 4000:
         text = text[:4000] + "\n…"
 
     if DRY_RUN:
-        logging.info(f"[DRY_RUN] Would send to Telegram:\n{text}")
+        if media_url:
+            logging.info(f"[DRY_RUN] Would send to Telegram with media {media_url}:\n{text}")
+        else:
+            logging.info(f"[DRY_RUN] Would send to Telegram:\n{text}")
         return
 
     try:
+        # If media is provided, try sending as photo first
+        if media_url:
+            success = _send_telegram_media(text, media_url)
+            if success:
+                return
+            # If media send fails, fall back to text-only message
+            logging.warning(f"Media send failed for {media_url}, falling back to text")
+
+        # Send as text message
         # Prefer plain text unless user explicitly opts in
         if not TELEGRAM_PARSE_MODE:
             r = _telegram_api_send(text, parse_mode="")
@@ -647,6 +683,57 @@ def send_telegram_message(text: str) -> None:
             logging.warning(f"Telegram send failed {r.status_code}: {r.text[:200]}")
     except Exception as e:
         logging.warning(f"Telegram exception: {e}")
+
+
+def _send_telegram_media(caption: str, media_url: str) -> bool:
+    """Send photo or video to Telegram based on file extension.
+
+    Returns True if successful, False otherwise.
+    """
+    # Determine media type from URL
+    lower_url = media_url.lower()
+    is_video = any(ext in lower_url for ext in ['.mp4', '.mov', '.avi', '.mkv', '.webm'])
+
+    if is_video:
+        api_url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendVideo"
+        media_field = "video"
+    else:
+        api_url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
+        media_field = "photo"
+
+    # Truncate caption if needed (Telegram limit is 1024 for photo/video captions)
+    if len(caption) > 1000:
+        caption = caption[:1000] + "\n…"
+
+    params = {
+        "chat_id": CHANNEL_ID,
+        media_field: media_url,
+        "caption": caption,
+    }
+
+    if TELEGRAM_PARSE_MODE:
+        params["parse_mode"] = TELEGRAM_PARSE_MODE
+    if DISABLE_NOTIFICATION:
+        params["disable_notification"] = True
+
+    try:
+        r = requests.post(api_url, data=params, timeout=30)
+        if r.status_code == 200:
+            return True
+
+        # If parse error with caption, retry without parse mode
+        if r.status_code == 400 and "can't parse entities" in r.text.lower():
+            logging.warning("Parse error in media caption - retrying as plain text")
+            params.pop("parse_mode", None)
+            r2 = requests.post(api_url, data=params, timeout=30)
+            if r2.status_code == 200:
+                return True
+
+        logging.warning(f"Media send failed {r.status_code}: {r.text[:200]}")
+        return False
+    except Exception as e:
+        logging.warning(f"Media send exception: {e}")
+        return False
 
 
 def format_message(topic: str, title: str, url: str, ts_iso: str) -> str:
@@ -756,7 +843,7 @@ def _self_test() -> None:
 
     # Simulate send (DRY_RUN recommended when running SELF_TEST)
     if DRY_RUN:
-        send_telegram_message(msg)
+        send_telegram_message(msg, media_url=items[0][4])
 
     # Case A: JSON-LD supplies absolute post.url with fragment; no DOM anchors present
     live_html_only_ld = """
@@ -892,7 +979,7 @@ def main() -> None:
                 logging.info(f"Checking {topic_name} -> {topic_url}")
                 new_posts = parse_live_page(topic_name, topic_url)
 
-                for pid, title, link, ts_iso in new_posts:
+                for pid, title, link, ts_iso, media_url in new_posts:
                     if pid in sent_post_ids:
                         continue
                     is_similar, similarity = check_recent_post_similarity(topic_name, title)
@@ -906,12 +993,15 @@ def main() -> None:
                         )
                         continue
                     msg = format_message(topic_name, title, link, ts_iso)
-                    send_telegram_message(msg)
+                    send_telegram_message(msg, media_url=media_url)
                     sent_post_ids.add(pid)
                     sent_links.add(link)
                     remember_recent_post(topic_name, title)
                     save_sent()
-                    logging.info(f"Sent: {title}")
+                    if media_url:
+                        logging.info(f"Sent with media: {title}")
+                    else:
+                        logging.info(f"Sent: {title}")
 
         except Exception as e:
             logging.error(f"Cycle error: {e}")

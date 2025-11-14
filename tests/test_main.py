@@ -15,9 +15,9 @@ def test_main_skips_duplicate_links(monkeypatch):
         return {"A": "urlA", "B": "urlB"}
 
     def mock_parse_live_page(topic_name, url):
-        return [(topic_name, "Title", "https://example.com/shared", "2024-01-01T00:00:00Z")]
+        return [(topic_name, "Title", "https://example.com/shared", "2024-01-01T00:00:00Z", None)]
 
-    def mock_send(msg):
+    def mock_send(msg, media_url=None):
         messages.append(msg)
 
     def stop_sleep(seconds):

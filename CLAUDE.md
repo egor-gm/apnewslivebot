@@ -98,8 +98,9 @@ apnewslivebot/
 
 - **`parse_live_page(topic_name, url, html)`** (line 438)
   - Extracts live blog posts from JSON-LD structured data
-  - Returns `list[(post_id, title, permalink, timestamp)]`
+  - Returns `list[(post_id, title, permalink, timestamp, media_url)]`
   - Supports multiple JSON-LD formats: `blogPosts`, `liveBlogUpdate`, `updates`, `@graph` arrays
+  - Extracts media URLs (images/videos) from JSON-LD `image` and `video` properties
 
 #### Permalink Resolution (Critical)
 - **`resolve_post_permalink()`** (line 379)
@@ -131,13 +132,20 @@ apnewslivebot/
   - Converts curly apostrophes to straight quotes
 
 #### Telegram Integration
-- **`send_telegram_message(text)`** (line 614)
+- **`send_telegram_message(text, media_url)`** (line 637)
+  - Sends messages with optional media (photos/videos)
   - Fallback strategy: Try with `TELEGRAM_PARSE_MODE`, fallback to plain text on 400 errors
   - Respects `DISABLE_WEB_PAGE_PREVIEW`, `DISABLE_NOTIFICATION`
   - Supports `DRY_RUN` mode for testing
+  - If media send fails, automatically falls back to text-only message
 
-- **`format_message(topic, title, url, timestamp)`** (line 652)
-  - Converts ISO timestamp → local timezone (default: Europe/Paris)
+- **`_send_telegram_media(caption, media_url)`** (line 688)
+  - Sends photo or video based on file extension (.mp4, .mov, .avi, .mkv, .webm = video)
+  - Truncates caption to 1000 characters (Telegram limit for media captions)
+  - Returns True on success, False on failure
+
+- **`format_message(topic, title, url, timestamp)`** (line 739)
+  - Converts ISO timestamp → local timezone (default: America/New_York)
   - Strips HTML tags from title
   - Format: `<clean_title>\n\n📰 <topic> - <date> <tz>\n\n<url>`
 
@@ -194,7 +202,7 @@ apnewslivebot/
 | `TELEGRAM_PARSE_MODE` | "" (plain) | "MarkdownV2", "HTML", or "" |
 | `DISABLE_WEB_PAGE_PREVIEW` | true | Disable link previews |
 | `DISABLE_NOTIFICATION` | false | Send silently |
-| `TIMEZONE` | Europe/Paris | Timezone for timestamps |
+| `TIMEZONE` | America/New_York | Timezone for timestamps |
 
 ### Leader Lock
 | Variable | Default | Description |
@@ -487,8 +495,8 @@ pytest==8.2.1            # Testing framework
 ### Known Limitations
 1. **No edit support**: If AP News edits a post, we send it again (different post_id)
 2. **Single channel**: Can't route different topics to different channels
-3. **No media**: Only sends text; ignores images/videos from posts
-4. **Timezone hardcoded**: Should support per-user timezone preferences
+3. **Media fallback**: If media URL is invalid or unreachable, falls back to text-only
+4. **Timezone per-user**: Only one timezone for all messages (configurable via env var)
 5. **No web UI**: All configuration via environment variables
 
 ---
@@ -521,6 +529,28 @@ pytest==8.2.1            # Testing framework
 - **Repository**: https://github.com/egor-gm/apnewslivebot (inferred from git log)
 - **Issues**: Use GitHub Issues for bug reports
 - **Questions**: Check README.md first, then open a discussion
+
+---
+
+## Recent Changes (This Session)
+
+### Added Features
+1. **Media Support**: Posts now include images and videos from AP News
+   - Extracts media URLs from JSON-LD `image` and `video` properties
+   - Sends photos via `sendPhoto` and videos via `sendVideo` Telegram API
+   - Automatically falls back to text-only if media send fails
+   - Supports multiple media formats: images (jpg, png, etc.) and videos (.mp4, .mov, .avi, .mkv, .webm)
+
+2. **Timezone Change**: Default timezone changed from `Europe/Paris` to `America/New_York`
+   - All timestamps now display in Eastern Time (ET/EDT/EST)
+   - Still configurable via `TIMEZONE` environment variable
+
+### Implementation Details
+- Modified `parse_live_page()` to return 5-tuple: `(post_id, title, permalink, timestamp, media_url)`
+- Added `_send_telegram_media()` helper function for photo/video sending
+- Updated `send_telegram_message()` to accept optional `media_url` parameter
+- Caption length limited to 1000 characters for media messages (Telegram limit)
+- Updated all tests to handle new tuple format
 
 ---
 

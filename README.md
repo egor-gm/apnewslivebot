@@ -1,6 +1,6 @@
 # AP News Live Bot
 
-This simple bot monitors the AP News website for Live Blog posts and relays them to a Telegram channel.
+This bot monitors the AP News website for Live Blog posts and relays them to a Telegram channel with text, images, and videos.
 
 ## Setup
 
